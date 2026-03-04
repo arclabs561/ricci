@@ -1,5 +1,9 @@
 # propago
 
+[![crates.io](https://img.shields.io/crates/v/propago.svg)](https://crates.io/crates/propago)
+[![Documentation](https://docs.rs/propago/badge.svg)](https://docs.rs/propago)
+[![CI](https://github.com/arclabs561/propago/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/propago/actions/workflows/ci.yml)
+
 Graph learning primitives built on `candle` tensors.
 
 This repo focuses on a small set of reusable building blocks (layers + small loops), not a full
@@ -54,4 +58,3 @@ Notes:
 ## License
 
 MIT OR Apache-2.0
-
