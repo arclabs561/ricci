@@ -22,9 +22,7 @@ impl GCNConv {
 
 /// Graph Attention Network Layer
 #[doc(hidden)]
-#[deprecated(
-    note = "GATConv is not implemented yet; prefer GCNConv or HGCNConv for now."
-)]
+#[deprecated(note = "GATConv is not implemented yet; prefer GCNConv or HGCNConv for now.")]
 pub struct GATConv {
     #[allow(dead_code)] // placeholder layer; forward path not wired yet
     lin: Linear,
