@@ -37,3 +37,4 @@ thiserror = "2.0"
 [dev-dependencies]
 ndarray = "0.16"
 proptest = "1.5"
+hyperball = "0.1"

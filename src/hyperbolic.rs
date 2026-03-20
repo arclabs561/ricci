@@ -403,13 +403,12 @@ mod tests {
     use ndarray::Array1;
     use proptest::prelude::*;
 
-    fn dot(a: &ndarray::ArrayView1<'_, f64>, b: &ndarray::ArrayView1<'_, f64>) -> f64 {
-        debug_assert_eq!(a.len(), b.len());
-        a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
-    }
+    // Reference Poincare ball operations from hyperball (canonical implementation).
+    // These are used to validate CandlePoincareBall's tensor-based ops.
+    use hyperball::core::PoincareBallCore;
 
-    fn norm(a: &ndarray::ArrayView1<'_, f64>) -> f64 {
-        dot(a, a).sqrt()
+    fn ref_ball(c: f64) -> PoincareBallCore<f64> {
+        PoincareBallCore::new(c)
     }
 
     fn mobius_add(
@@ -417,15 +416,7 @@ mod tests {
         x: &ndarray::ArrayView1<'_, f64>,
         y: &ndarray::ArrayView1<'_, f64>,
     ) -> Array1<f64> {
-        let x_norm_sq = dot(x, x);
-        let y_norm_sq = dot(y, y);
-        let xy = dot(x, y);
-
-        let denom = 1.0 + 2.0 * c * xy + (c * c) * x_norm_sq * y_norm_sq;
-        let s1 = 1.0 + 2.0 * c * xy + c * y_norm_sq;
-        let s2 = 1.0 - c * x_norm_sq;
-
-        (x.to_owned() * s1 + y.to_owned() * s2) / denom
+        Array1::from_vec(ref_ball(c).mobius_add(x.as_slice().unwrap(), y.as_slice().unwrap()))
     }
 
     fn exp_map(
@@ -433,18 +424,24 @@ mod tests {
         x: &ndarray::ArrayView1<'_, f64>,
         v: &ndarray::ArrayView1<'_, f64>,
     ) -> Array1<f64> {
-        // Matches the `skel::Manifold` implementation used elsewhere in the stack.
+        // hyperball only exposes exp_map_zero; for general basepoint, compose:
+        // exp_x(v) = x ⊕ exp_0(PT_{x->0}(v))
+        // But the Candle tests use a direct formula. Keep the inline version for
+        // general-basepoint exp/log since hyperball::PoincareBallCore doesn't expose them.
+        let xs = x.as_slice().unwrap();
+        let vs = v.as_slice().unwrap();
+        let dot_xx: f64 = xs.iter().map(|a| a * a).sum();
+        let v_norm: f64 = vs.iter().map(|a| a * a).sum::<f64>().sqrt();
         let c_sqrt = c.sqrt();
-        let v_norm = dot(v, v).sqrt();
-        let lambda_x = 2.0 / (1.0 - c * dot(x, x));
+        let lambda_x = 2.0 / (1.0 - c * dot_xx);
 
         if v_norm < 1e-6 {
             return x.to_owned();
         }
 
         let direction = (c_sqrt * lambda_x * v_norm / 2.0).tanh();
-        let scaled_v = v.to_owned() * (direction / (c_sqrt * v_norm));
-        mobius_add(c, x, &scaled_v.view())
+        let scaled: Vec<f64> = vs.iter().map(|&vi| vi * direction / (c_sqrt * v_norm)).collect();
+        Array1::from_vec(ref_ball(c).mobius_add(xs, &scaled))
     }
 
     fn log_map(
@@ -452,28 +449,26 @@ mod tests {
         x: &ndarray::ArrayView1<'_, f64>,
         y: &ndarray::ArrayView1<'_, f64>,
     ) -> Array1<f64> {
-        // Matches the `skel::Manifold` implementation used elsewhere in the stack.
-        let neg_x = x.to_owned() * -1.0;
-        let diff = mobius_add(c, &neg_x.view(), y);
-        let diff_norm = norm(&diff.view());
+        let xs = x.as_slice().unwrap();
+        let ys = y.as_slice().unwrap();
+        let dot_xx: f64 = xs.iter().map(|a| a * a).sum();
         let c_sqrt = c.sqrt();
-        let lambda_x = 2.0 / (1.0 - c * dot(x, x));
+        let lambda_x = 2.0 / (1.0 - c * dot_xx);
+
+        let neg_x: Vec<f64> = xs.iter().map(|&a| -a).collect();
+        let diff = ref_ball(c).mobius_add(&neg_x, ys);
+        let diff_norm: f64 = diff.iter().map(|a| a * a).sum::<f64>().sqrt();
 
         if diff_norm < 1e-6 {
             return Array1::zeros(x.len());
         }
 
         let scale = (2.0 / (c_sqrt * lambda_x)) * (c_sqrt * diff_norm).atanh();
-        diff * (scale / diff_norm)
+        Array1::from_vec(diff.iter().map(|&d| d * scale / diff_norm).collect())
     }
 
     fn distance(c: f64, x: &ndarray::ArrayView1<'_, f64>, y: &ndarray::ArrayView1<'_, f64>) -> f64 {
-        // d(x,y) = 2/sqrt(c) * atanh(sqrt(c) * ||(-x) ⊕ y||)
-        let c_sqrt = c.sqrt();
-        let neg_x = x.to_owned() * -1.0;
-        let diff = mobius_add(c, &neg_x.view(), y);
-        let diff_norm = norm(&diff.view());
-        (2.0 / c_sqrt) * (c_sqrt * diff_norm).atanh()
+        ref_ball(c).distance(x.as_slice().unwrap(), y.as_slice().unwrap())
     }
 
     #[test]
