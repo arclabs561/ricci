@@ -2,7 +2,7 @@
 name = "propago"
 version = "0.2.0"
 edition = "2021"
-description = "Graph Neural Network primitives and training loops"
+description = "Graph neural network primitives: GCN and hyperbolic GCN on Burn tensors"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arclabs561/propago"
 homepage = "https://github.com/arclabs561/propago"

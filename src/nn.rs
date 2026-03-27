@@ -24,6 +24,11 @@ impl<B: Backend> GCNConv<B> {
         }
     }
 
+    /// Access the underlying linear layer.
+    pub fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
     /// Forward: `adj @ linear(x)`.
     pub fn forward(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
         let x = self.linear.forward(x);
@@ -57,6 +62,16 @@ impl<B: Backend> HGCNConv<B> {
             linear: LinearConfig::new(d, d).init(device),
             ball: PoincareBall::new(c),
         }
+    }
+
+    /// Access the underlying linear layer.
+    pub fn linear(&self) -> &Linear<B> {
+        &self.linear
+    }
+
+    /// Access the Poincare ball geometry.
+    pub fn ball(&self) -> &PoincareBall {
+        &self.ball
     }
 
     /// Forward pass using log/exp at the origin.
