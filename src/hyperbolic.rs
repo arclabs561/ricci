@@ -170,6 +170,41 @@ impl PoincareBall {
         v0 * scale
     }
 
+    /// Project a tangent vector at the origin to have bounded norm.
+    ///
+    /// Ensures the tangent vector maps to a point inside the ball under exp0.
+    /// Used between curvature changes (HGCN pattern: log0 with c_in, proj_tan0 + exp0 with c_out).
+    pub fn proj_tan0<B: Backend>(&self, v: Tensor<B, 2>) -> Tensor<B, 2> {
+        // For the Poincare ball, tangent space at origin is Euclidean (no rescaling needed
+        // beyond ensuring the exp map stays in the ball). The conformal factor at origin is
+        // lambda_0 = 2, so tangent vectors are already in standard coordinates.
+        // We just clamp the norm to avoid exp0 overshooting the boundary.
+        let max = self.max_norm();
+        let norm = self.norm_keepdim(v.clone());
+        let b = v.dims()[0];
+        let scale =
+            (Tensor::<B, 2>::ones([b, 1], &v.device()) * max / (norm + self.eps)).clamp_max(1.0);
+        v * scale
+    }
+
+    /// Apply a Euclidean activation function in hyperbolic space.
+    ///
+    /// Pattern from Chami et al. (2019): `exp0_out(act(log0_in(x)))`.
+    /// Supports per-layer curvature change when `ball_out` differs from `self`.
+    pub fn hyp_act<B: Backend, F>(
+        &self,
+        x: Tensor<B, 2>,
+        act: F,
+        ball_out: &PoincareBall,
+    ) -> Tensor<B, 2>
+    where
+        F: Fn(Tensor<B, 2>) -> Tensor<B, 2>,
+    {
+        let xt = act(self.log0(x));
+        let xt = ball_out.proj_tan0(xt);
+        ball_out.project(ball_out.exp0(xt))
+    }
+
     /// Bias translation: `x oplus_c b = exp_x( P_{0->x}(log_0(b)) )`.
     ///
     /// Translates `x` by a hyperbolic bias `b` (Ganea et al. 2018, Eq. 28).
@@ -469,6 +504,80 @@ mod tests {
                 l1(&y_v, &y2_v)
             );
         }
+    }
+
+    #[test]
+    fn proj_tan0_clamps_large_tangent_vectors() {
+        let ball = PoincareBall::new(1.0);
+        // Large tangent vector that would overshoot the ball under exp0.
+        let v = to_burn(&[5.0, 5.0, 5.0], [1, 3]);
+        let v_proj = ball.proj_tan0(v);
+        let v_v = v_proj.to_data().to_vec::<f32>().unwrap();
+        let norm: f32 = v_v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            norm <= ball.max_norm() + 1e-4,
+            "proj_tan0 should clamp norm to max_norm, got {norm}"
+        );
+        // Small tangent vector should pass through unchanged.
+        let v_small = to_burn(&[0.01, -0.01, 0.005], [1, 3]);
+        let v_small_proj = ball.proj_tan0(v_small.clone());
+        let a = v_small.to_data().to_vec::<f32>().unwrap();
+        let b = v_small_proj.to_data().to_vec::<f32>().unwrap();
+        assert!(
+            l1(&a, &b) < 1e-5,
+            "proj_tan0 should not change small vectors"
+        );
+    }
+
+    #[test]
+    fn hyp_act_identity_is_close_to_input() {
+        let ball = PoincareBall::new(1.0);
+        let x = ball.project(to_burn(&[0.1, -0.05, 0.02, 0.03, 0.04, -0.01], [2, 3]));
+        let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
+
+        // Identity activation: exp0(log0(x)) should round-trip.
+        let y = ball.hyp_act(x, |t| t, &ball);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(l1(&x_v, &y_v) < 1e-3, "identity hyp_act should round-trip");
+    }
+
+    #[test]
+    fn hyp_act_relu_produces_finite() {
+        let ball = PoincareBall::new(1.0);
+        let x = ball.project(to_burn(&[0.1, -0.05, 0.02, -0.03, 0.04, -0.01], [2, 3]));
+        let y = ball.hyp_act(x, |t| t.clamp_min(0.0), &ball);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&y_v), "hyp_act(relu) non-finite");
+        // Result should be inside the ball.
+        for row in 0..2 {
+            let norm: f32 = y_v[row * 3..row * 3 + 3]
+                .iter()
+                .map(|x| x * x)
+                .sum::<f32>()
+                .sqrt();
+            assert!(
+                norm < ball.max_norm() + 1e-4,
+                "hyp_act output outside ball: norm={norm}"
+            );
+        }
+    }
+
+    #[test]
+    fn hyp_act_curvature_change() {
+        let ball_in = PoincareBall::new(1.0);
+        let ball_out = PoincareBall::new(2.0);
+        let x = ball_in.project(to_burn(&[0.1, -0.05, 0.02], [1, 3]));
+
+        let y = ball_in.hyp_act(x, |t| t.clamp_min(0.0), &ball_out);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&y_v), "curvature-change hyp_act non-finite");
+        // Output should be inside ball_out (radius 1/sqrt(2) ~ 0.707).
+        let norm: f32 = y_v.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            norm < ball_out.max_norm() + 1e-4,
+            "output outside ball_out: norm={norm} max={}",
+            ball_out.max_norm()
+        );
     }
 
     // --- Cross-validation against hyperball reference ---

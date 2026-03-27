@@ -74,12 +74,31 @@ impl<B: Backend> HGCNConv<B> {
         &self.ball
     }
 
-    /// Forward pass using log/exp at the origin.
+    /// Forward pass using log/exp at the origin (no activation).
     pub fn forward(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
         let x_tangent = self.ball.log0(x);
         let x_tangent = self.linear.forward(x_tangent);
         let aggregated = adj.matmul(x_tangent);
         self.ball.exp0(aggregated)
+    }
+
+    /// Forward pass with activation applied in tangent space (Chami et al. 2019).
+    ///
+    /// Full HGCN pattern: linear -> aggregate -> activate.
+    /// Activation is applied via log0 -> act -> exp0 after aggregation.
+    /// `ball_out` allows per-layer curvature change; pass `self.ball()` for same curvature.
+    pub fn forward_act<F>(
+        &self,
+        x: Tensor<B, 2>,
+        adj: Tensor<B, 2>,
+        act: F,
+        ball_out: &PoincareBall,
+    ) -> Tensor<B, 2>
+    where
+        F: Fn(Tensor<B, 2>) -> Tensor<B, 2>,
+    {
+        let h = self.forward(x, adj);
+        self.ball.hyp_act(h, act, ball_out)
     }
 
     /// Forward pass using log/exp at an explicit basepoint `p`.
@@ -228,6 +247,55 @@ mod tests {
         let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
         let y = layer.forward_local_dense(x, adj);
         assert_eq!(y.dims(), [n, d]);
+    }
+
+    #[test]
+    fn hgcn_forward_act_produces_finite() {
+        let n = 4;
+        let d = 3;
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(TensorData::new(vec![0.05f32; n * d], [n, d]), &dev());
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        // ReLU activation via burn's clamp_min
+        let ball = *layer.ball();
+        let y = layer.forward_act(x, adj, |t| t.clamp_min(0.0), &ball);
+        assert_eq!(y.dims(), [n, d]);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(y_v.iter().all(|v| v.is_finite()), "forward_act non-finite");
+    }
+
+    #[test]
+    fn hgcn_forward_act_with_curvature_change() {
+        let n = 3;
+        let d = 3;
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(
+            TensorData::new(
+                vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
+                [n, d],
+            ),
+            &dev(),
+        );
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        // Different output curvature (c_in=1.0, c_out=2.0)
+        let ball_out = crate::PoincareBall::new(2.0);
+        let y = layer.forward_act(x, adj, |t| t.clamp_min(0.0), &ball_out);
+        assert_eq!(y.dims(), [n, d]);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(
+            y_v.iter().all(|v| v.is_finite()),
+            "curvature-change non-finite"
+        );
     }
 
     #[test]
