@@ -813,5 +813,88 @@ mod tests {
             prop_assert!(l1(&y_v, &y2_v) < 0.15,
                 "c={c}: roundtrip error {}", l1(&y_v, &y2_v));
         }
+
+        // Metric space axioms: symmetry, triangle inequality, non-negativity.
+        #[test]
+        fn prop_distance_is_symmetric(x0 in arb_point(3), y0 in arb_point(3)) {
+            let ball = PoincareBall::new(1.0);
+            let x0 = clamp_norm(x0, 0.60);
+            let y0 = clamp_norm(y0, 0.60);
+            let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
+            let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
+            let x = ball.project(to_burn(&x_f, [1, 3]));
+            let y = ball.project(to_burn(&y_f, [1, 3]));
+
+            let dxy = ball.distance(x.clone(), y.clone()).to_data().to_vec::<f32>().unwrap()[0];
+            let dyx = ball.distance(y, x).to_data().to_vec::<f32>().unwrap()[0];
+
+            prop_assert!((dxy - dyx).abs() < 1e-4,
+                "distance not symmetric: d(x,y)={dxy} d(y,x)={dyx}");
+            prop_assert!(dxy >= -1e-5, "distance negative: {dxy}");
+        }
+
+        #[test]
+        fn prop_triangle_inequality(
+            x0 in arb_point(3),
+            y0 in arb_point(3),
+            z0 in arb_point(3),
+        ) {
+            let ball = PoincareBall::new(1.0);
+            let x0 = clamp_norm(x0, 0.50);
+            let y0 = clamp_norm(y0, 0.50);
+            let z0 = clamp_norm(z0, 0.50);
+            let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
+            let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
+            let z_f: Vec<f32> = z0.iter().map(|v| *v as f32).collect();
+            let x = ball.project(to_burn(&x_f, [1, 3]));
+            let y = ball.project(to_burn(&y_f, [1, 3]));
+            let z = ball.project(to_burn(&z_f, [1, 3]));
+
+            let dxy = ball.distance(x.clone(), y.clone()).to_data().to_vec::<f32>().unwrap()[0];
+            let dyz = ball.distance(y, z.clone()).to_data().to_vec::<f32>().unwrap()[0];
+            let dxz = ball.distance(x, z).to_data().to_vec::<f32>().unwrap()[0];
+
+            // d(x,z) <= d(x,y) + d(y,z) + tolerance for f32
+            prop_assert!(dxz <= dxy + dyz + 5e-2,
+                "triangle inequality violated: d(x,z)={dxz} > d(x,y)+d(y,z)={}", dxy + dyz);
+        }
+
+        // Projection is idempotent: project(project(x)) == project(x).
+        #[test]
+        fn prop_projection_idempotent(x0 in prop::collection::vec(-2.0f64..2.0f64, 3usize)) {
+            let ball = PoincareBall::new(1.0);
+            let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
+            let x = to_burn(&x_f, [1, 3]);
+            let p1 = ball.project(x);
+            let p2 = ball.project(p1.clone());
+            let a = p1.to_data().to_vec::<f32>().unwrap();
+            let b = p2.to_data().to_vec::<f32>().unwrap();
+            prop_assert!(l1(&a, &b) < 1e-4, "projection not idempotent: l1={}", l1(&a, &b));
+
+            // Projected point is inside the ball.
+            let norm: f32 = a.iter().map(|v| v * v).sum::<f32>().sqrt();
+            prop_assert!(norm <= ball.max_norm() + 1e-5,
+                "projected point outside ball: norm={norm} max={}", ball.max_norm());
+        }
+
+        // Mobius addition associativity doesn't hold in hyperbolic space (it's a gyrogroup),
+        // but x + 0 = x and 0 + x = x should always hold.
+        #[test]
+        fn prop_mobius_add_identity(x0 in arb_point(3)) {
+            let ball = PoincareBall::new(1.0);
+            let x0 = clamp_norm(x0, 0.60);
+            let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
+            let x = ball.project(to_burn(&x_f, [1, 3]));
+            let z = to_burn(&[0.0f32; 3], [1, 3]);
+            let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
+
+            let lhs = ball.mobius_add(x.clone(), z.clone());
+            let rhs = ball.mobius_add(z, x);
+            let lhs_v = lhs.to_data().to_vec::<f32>().unwrap();
+            let rhs_v = rhs.to_data().to_vec::<f32>().unwrap();
+
+            prop_assert!(l1(&x_v, &lhs_v) < 1e-3, "x+0 != x: l1={}", l1(&x_v, &lhs_v));
+            prop_assert!(l1(&x_v, &rhs_v) < 1e-3, "0+x != x: l1={}", l1(&x_v, &rhs_v));
+        }
     }
 }

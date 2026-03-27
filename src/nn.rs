@@ -299,6 +299,152 @@ mod tests {
     }
 
     #[test]
+    fn hgcn_forward_with_bias_shapes_and_finite() {
+        let n = 4;
+        let d = 3;
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(TensorData::new(vec![0.05f32; n * d], [n, d]), &dev());
+        // Shared bias (broadcasted from [1, d])
+        let b0 = Tensor::from_data(TensorData::new(vec![0.01f32, -0.01, 0.005], [1, d]), &dev());
+        let p = Tensor::from_data(TensorData::new(vec![0.0f32; d], [1, d]), &dev());
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+        let y = layer.forward_with_basepoint_and_bias(x, adj, p, b0);
+        assert_eq!(y.dims(), [n, d]);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(
+            y_v.iter().all(|v| v.is_finite()),
+            "forward_with_bias non-finite"
+        );
+    }
+
+    #[test]
+    fn hgcn_forward_with_bias_differs_from_without() {
+        let n = 3;
+        let d = 3;
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(
+            TensorData::new(
+                vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
+                [n, d],
+            ),
+            &dev(),
+        );
+        let p = Tensor::from_data(TensorData::new(vec![0.0f32; d], [1, d]), &dev());
+        let b0 = Tensor::from_data(TensorData::new(vec![0.1f32, -0.05, 0.02], [1, d]), &dev());
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        let y_no_bias = layer.forward_with_basepoint(x.clone(), adj.clone(), p.clone());
+        let y_with_bias = layer.forward_with_basepoint_and_bias(x, adj, p, b0);
+
+        let a = y_no_bias.to_data().to_vec::<f32>().unwrap();
+        let b = y_with_bias.to_data().to_vec::<f32>().unwrap();
+        // Bias should cause a meaningful difference.
+        let diff: f32 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
+        assert!(diff > 1e-3, "bias should change output, diff={diff}");
+    }
+
+    #[test]
+    fn gcn_non_square_dimensions() {
+        let n = 4;
+        let d_in = 5;
+        let d_out = 3;
+        let layer = GCNConv::<B>::init(d_in, d_out, &dev());
+        let x = Tensor::from_data(TensorData::new(vec![0.1f32; n * d_in], [n, d_in]), &dev());
+        let adj = Tensor::from_data(TensorData::new(vec![1.0f32; n * n], [n, n]), &dev());
+        let y = layer.forward(x, adj);
+        assert_eq!(y.dims(), [n, d_out]);
+    }
+
+    #[test]
+    fn hgcn_with_real_adjacency() {
+        // Non-identity adjacency: a simple 4-node chain graph.
+        let n = 4;
+        let d = 3;
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(
+            TensorData::new(
+                vec![
+                    0.05f32, -0.03, 0.02, // node 0
+                    0.01, 0.04, -0.01, // node 1
+                    -0.02, 0.01, 0.03, // node 2
+                    0.03, -0.02, 0.01, // node 3
+                ],
+                [n, d],
+            ),
+            &dev(),
+        );
+        // Normalized adjacency for chain: 0-1-2-3
+        // A_hat = D^{-1/2} (A + I) D^{-1/2}, approximated as row-normalized
+        #[rustfmt::skip]
+        let adj_v = vec![
+            0.5, 0.5, 0.0, 0.0,
+            0.33, 0.33, 0.33, 0.0,
+            0.0, 0.33, 0.33, 0.33,
+            0.0, 0.0, 0.5, 0.5,
+        ];
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        let y = layer.forward(x, adj);
+        assert_eq!(y.dims(), [n, d]);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(
+            y_v.iter().all(|v| v.is_finite()),
+            "chain graph forward non-finite"
+        );
+
+        // Interior nodes (1,2) should differ from boundary nodes (0,3)
+        // because they aggregate from more neighbors.
+        let row0: Vec<f32> = y_v[0..d].to_vec();
+        let row1: Vec<f32> = y_v[d..2 * d].to_vec();
+        let diff: f32 = row0.iter().zip(&row1).map(|(a, b)| (a - b).abs()).sum();
+        assert!(
+            diff > 1e-4,
+            "boundary and interior nodes should differ, diff={diff}"
+        );
+    }
+
+    #[test]
+    fn two_layer_hgcn_pipeline() {
+        // Chain two HGCN layers: layer1 -> act -> layer2, simulating a real model.
+        let n = 4;
+        let d = 3;
+        let layer1 = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer2 = HGCNConv::<B>::init(d, 1.0, &dev());
+
+        let x = Tensor::from_data(TensorData::new(vec![0.05f32; n * d], [n, d]), &dev());
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+            if i + 1 < n {
+                adj_v[i * n + i + 1] = 0.5;
+                adj_v[(i + 1) * n + i] = 0.5;
+            }
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        let ball = *layer1.ball();
+        // Layer 1 with ReLU activation
+        let h = layer1.forward_act(x, adj.clone(), |t| t.clamp_min(0.0), &ball);
+        // Layer 2 (no activation on final layer, per HGCN convention)
+        let y = layer2.forward(h, adj);
+
+        assert_eq!(y.dims(), [n, d]);
+        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        assert!(
+            y_v.iter().all(|v| v.is_finite()),
+            "two-layer pipeline non-finite"
+        );
+    }
+
+    #[test]
     fn forward_local_dense_and_forward_agree_on_identity_adj() {
         // With identity adjacency, both forward paths should produce similar results
         // because each node only aggregates from itself.
