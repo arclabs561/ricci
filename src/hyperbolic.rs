@@ -10,6 +10,37 @@ use burn::tensor::Tensor;
 ///
 /// Implements the core geometric primitives needed for hyperbolic neural networks:
 /// projection, Mobius addition, exp/log maps, distance, and parallel transport.
+///
+/// # Example
+///
+/// ```
+/// use burn::tensor::{backend::Backend, TensorData};
+/// use burn_ndarray::NdArray;
+/// use propago::PoincareBall;
+///
+/// type B = NdArray<f32>;
+/// let dev = <B as Backend>::Device::default();
+/// let ball = PoincareBall::new(1.0);
+///
+/// let x = burn::tensor::Tensor::<B, 2>::from_data(
+///     TensorData::new(vec![0.3f32, 0.0, 0.0], [1, 3]), &dev,
+/// );
+/// let y = burn::tensor::Tensor::<B, 2>::from_data(
+///     TensorData::new(vec![0.0f32, 0.3, 0.0], [1, 3]), &dev,
+/// );
+///
+/// // Distance is always non-negative and finite.
+/// let d = ball.distance(x.clone(), y).to_data().to_vec::<f32>().unwrap()[0];
+/// assert!(d > 0.0 && d.is_finite());
+///
+/// // exp0(log0(x)) round-trips.
+/// let v = ball.log0(x.clone());
+/// let x2 = ball.exp0(v);
+/// let err: f32 = x.to_data().to_vec::<f32>().unwrap().iter()
+///     .zip(x2.to_data().to_vec::<f32>().unwrap().iter())
+///     .map(|(a, b)| (a - b).abs()).sum();
+/// assert!(err < 1e-3);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct PoincareBall {
     /// Curvature parameter `c > 0` where sectional curvature is `K = -c`.

@@ -42,6 +42,31 @@ impl<B: Backend> GCNConv<B> {
 /// 1. Map to tangent space (log map)
 /// 2. Euclidean message passing (linear + adjacency matmul)
 /// 3. Map back to ball (exp map)
+///
+/// # Example
+///
+/// ```
+/// use burn::tensor::{backend::Backend, TensorData};
+/// use burn_ndarray::NdArray;
+/// use propago::HGCNConv;
+///
+/// type B = NdArray<f32>;
+/// let dev = <B as Backend>::Device::default();
+///
+/// let layer = HGCNConv::<B>::init(4, 1.0, &dev);
+/// let x = burn::tensor::Tensor::<B, 2>::from_data(
+///     TensorData::new(vec![0.01f32; 3 * 4], [3, 4]), &dev,
+/// );
+/// let adj = burn::tensor::Tensor::<B, 2>::from_data(
+///     TensorData::new(vec![
+///         1.0, 0.5, 0.0,
+///         0.5, 1.0, 0.5,
+///         0.0, 0.5, 1.0f32,
+///     ], [3, 3]), &dev,
+/// );
+/// let y = layer.forward(x, adj);
+/// assert_eq!(y.dims(), [3, 4]);
+/// ```
 pub struct HGCNConv<B: Backend> {
     linear: Linear<B>,
     ball: PoincareBall,
