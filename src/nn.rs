@@ -517,4 +517,99 @@ mod tests {
             l1(&y_o, &y_l)
         );
     }
+
+    /// Helper: check all rows of a [n, d] tensor are inside the ball.
+    fn assert_inside_ball(t: &Tensor<B, 2>, ball: &crate::PoincareBall, label: &str) {
+        let [n, d] = t.dims();
+        let v = t.to_data().to_vec::<f32>().unwrap();
+        let max = ball.max_norm();
+        for i in 0..n {
+            let row = &v[i * d..(i + 1) * d];
+            let norm: f32 = row.iter().map(|x| x * x).sum::<f32>().sqrt();
+            assert!(
+                norm <= max + 1e-4,
+                "{label} row {i} outside ball: norm={norm} max={max}"
+            );
+            assert!(
+                row.iter().all(|x| x.is_finite()),
+                "{label} row {i} non-finite"
+            );
+        }
+    }
+
+    #[test]
+    fn all_forward_variants_stay_inside_ball() {
+        let n = 4;
+        let d = 3;
+        let ball = crate::PoincareBall::new(1.0);
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(
+            TensorData::new(
+                vec![
+                    0.3f32, -0.2, 0.1, 0.1, 0.2, -0.3, -0.1, 0.3, 0.2, 0.2, -0.1, 0.1,
+                ],
+                [n, d],
+            ),
+            &dev(),
+        );
+        #[rustfmt::skip]
+        let adj_v = vec![
+            0.5, 0.5, 0.0, 0.0,
+            0.33, 0.34, 0.33, 0.0,
+            0.0, 0.33, 0.34, 0.33,
+            0.0, 0.0, 0.5, 0.5f32,
+        ];
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+        let p = Tensor::from_data(TensorData::new(vec![0.05f32, -0.02, 0.01], [1, d]), &dev());
+        let b0 = Tensor::from_data(TensorData::new(vec![0.02f32, -0.01, 0.005], [1, d]), &dev());
+
+        let y1 = layer.forward(x.clone(), adj.clone());
+        assert_inside_ball(&y1, &ball, "forward");
+
+        let y2 = layer.forward_with_basepoint(x.clone(), adj.clone(), p.clone());
+        assert_inside_ball(&y2, &ball, "forward_with_basepoint");
+
+        let y3 =
+            layer.forward_with_basepoint_and_bias(x.clone(), adj.clone(), p.clone(), b0.clone());
+        assert_inside_ball(&y3, &ball, "forward_with_basepoint_and_bias");
+
+        let y4 = layer.forward_local_dense(x.clone(), adj.clone());
+        assert_inside_ball(&y4, &ball, "forward_local_dense");
+
+        let y5 = layer.forward_act(x, adj, |t| t.clamp_min(0.0), &ball);
+        assert_inside_ball(&y5, &ball, "forward_act");
+    }
+
+    #[test]
+    fn per_node_basepoint() {
+        // Per-node basepoints [n, d] (not broadcasted from [1, d]).
+        let n = 3;
+        let d = 3;
+        let ball = crate::PoincareBall::new(1.0);
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::from_data(
+            TensorData::new(
+                vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
+                [n, d],
+            ),
+            &dev(),
+        );
+        // Each node has its own basepoint.
+        let p = Tensor::from_data(
+            TensorData::new(
+                vec![0.02f32, 0.01, -0.01, -0.01, 0.02, 0.01, 0.01, -0.02, 0.02],
+                [n, d],
+            ),
+            &dev(),
+        );
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        let y = layer.forward_with_basepoint(x, adj, p);
+        assert_eq!(y.dims(), [n, d]);
+        assert_inside_ball(&y, &ball, "per_node_basepoint");
+    }
 }

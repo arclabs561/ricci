@@ -68,7 +68,8 @@ impl PoincareBall {
         self.c.sqrt()
     }
 
-    fn max_norm(&self) -> f32 {
+    /// Maximum norm for points inside the ball: `(1/sqrt(c)) - 1e-5`.
+    pub fn max_norm(&self) -> f32 {
         (1.0 / self.sqrt_c()) - 1e-5
     }
 
