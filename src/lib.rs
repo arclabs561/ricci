@@ -1,21 +1,16 @@
-//! propago: The Learning Layer.
+//! propago: graph learning primitives on Burn tensors.
 //!
-//! Provides a small set of graph learning primitives built on `candle` tensors.
+//! Provides Poincare ball geometry and graph convolution layers that run on any
+//! Burn backend (ndarray, wgpu, tch, etc.).
 //!
-//! Current public surface:
-//! - `GCNConv`: a simple graph convolution (linear + adjacency matmul)
-//! - `HGCNConv`: hyperbolic graph convolution on the Poincaré ball (Tensor-native ops)
+//! - [`PoincareBall`]: hyperbolic geometry ops (project, mobius_add, exp/log maps)
+//! - [`GCNConv`]: graph convolutional layer (linear + adjacency matmul)
+//! - [`HGCNConv`]: hyperbolic graph convolution on the Poincare ball
 
 #![forbid(unsafe_code)]
 
 pub mod hyperbolic;
 pub mod nn;
 
-pub use hyperbolic::HGCNConv;
-pub use nn::GCNConv;
-
-#[cfg(feature = "backend-burn")]
-pub mod burn_hyperbolic;
-
-#[cfg(feature = "backend-mlx")]
-pub mod mlx_hyperbolic;
+pub use hyperbolic::PoincareBall;
+pub use nn::{GCNConv, HGCNConv};

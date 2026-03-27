@@ -1,6 +1,6 @@
 [package]
 name = "propago"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 description = "Graph Neural Network primitives and training loops"
 license = "MIT OR Apache-2.0"
@@ -11,24 +11,11 @@ keywords = ["gnn", "graph", "neural-network"]
 categories = ["science", "algorithms"]
 
 [features]
-# Keep Candle as the default backend for now (current public API).
-default = ["backend-candle"]
-
-backend-candle = []
-backend-burn = ["dep:burn", "dep:burn-ndarray"]
-backend-mlx = ["dep:mlx-rs", "mlx-rs/accelerate"]
-backend-mlx-cpu = ["backend-mlx"]
-backend-mlx-metal = ["dep:mlx-rs", "mlx-rs/accelerate", "mlx-rs/metal"]
+default = []
 
 [dependencies]
-# Compute Backend
-candle-core = "0.9"
-candle-nn = "0.9"
-
-# Compute Backend (Burn, optional)
-burn = { version = "0.20.0", default-features = false, features = ["std"], optional = true }
-burn-ndarray = { version = "0.20.0", default-features = true, optional = true }
-mlx-rs = { version = "0.25.3", optional = true, default-features = false }
+burn = { version = "0.20.0", default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.20.0", default-features = true }
 
 # Utils
 rand = "0.9"
