@@ -23,8 +23,14 @@ impl PoincareBall {
     pub fn new(c: f64) -> Self {
         Self {
             c: c as f32,
-            eps: 1e-6,
+            eps: 1e-5,
         }
+    }
+
+    /// Construct with a custom epsilon for numerical stability.
+    #[must_use]
+    pub fn new_with_eps(c: f64, eps: f32) -> Self {
+        Self { c: c as f32, eps }
     }
 
     fn sqrt_c(&self) -> f32 {
@@ -181,7 +187,6 @@ mod tests {
     use super::*;
     use burn::tensor::TensorData;
     use burn_ndarray::NdArray;
-    use ndarray::Array1;
     use proptest::prelude::*;
 
     type B = NdArray<f32>;
@@ -196,6 +201,10 @@ mod tests {
 
     fn l1(a: &[f32], b: &[f32]) -> f32 {
         a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum()
+    }
+
+    fn all_finite(v: &[f32]) -> bool {
+        v.iter().all(|x| x.is_finite())
     }
 
     fn clamp_norm(mut v: Vec<f64>, max: f64) -> Vec<f64> {
@@ -348,6 +357,120 @@ mod tests {
         );
     }
 
+    // --- Edge case tests ---
+
+    #[test]
+    fn zero_vector_ops_produce_finite_results() {
+        let ball = PoincareBall::new(1.0);
+        let z = to_burn(&[0.0; 6], [2, 3]);
+
+        // exp0(0) should be near origin
+        let e = ball.exp0(z.clone());
+        let e_v = e.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&e_v), "exp0(0) produced non-finite");
+        assert!(l1(&e_v, &[0.0; 6]) < 1e-3, "exp0(0) should be ~0");
+
+        // log0(0) should be near zero (or at least finite)
+        let l = ball.log0(z.clone());
+        let l_v = l.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&l_v), "log0(0) produced non-finite");
+
+        // distance(0, 0) should be 0
+        let d = ball.distance(z.clone(), z.clone());
+        let d_v = d.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&d_v), "distance(0, 0) produced non-finite");
+
+        // mobius_add(0, 0) should be 0
+        let m = ball.mobius_add(z.clone(), z);
+        let m_v = m.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&m_v), "mobius_add(0, 0) produced non-finite");
+    }
+
+    #[test]
+    fn near_boundary_ops_produce_finite_results() {
+        let ball = PoincareBall::new(1.0);
+        let max = ball.max_norm();
+        // Points at 95% of ball radius.
+        let r = max * 0.95;
+        let x = to_burn(&[r, 0.0, 0.0, 0.0, r, 0.0], [2, 3]);
+        let y = to_burn(&[0.0, 0.0, r, -r, 0.0, 0.0], [2, 3]);
+
+        let x = ball.project(x);
+        let y = ball.project(y);
+
+        let d = ball.distance(x.clone(), y.clone());
+        let d_v = d.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&d_v), "near-boundary distance non-finite");
+        assert!(d_v.iter().all(|&v| v >= 0.0), "negative distance");
+
+        let v = ball.log_map(x.clone(), y.clone());
+        let v_v = v.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&v_v), "near-boundary log_map non-finite");
+
+        let y2 = ball.exp_map(x.clone(), v);
+        let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&y2_v), "near-boundary exp_map non-finite");
+
+        let m = ball.mobius_add(x, y);
+        let m_v = m.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&m_v), "near-boundary mobius_add non-finite");
+    }
+
+    #[test]
+    fn parallel_transport_scaling_is_correct() {
+        // P_{0->x}(v) = (lambda_0 / lambda_x) v = (2 / lambda_x) v
+        let ball = PoincareBall::new(1.0);
+        let x = ball.project(to_burn(&[0.3, -0.2, 0.1], [1, 3]));
+        let v0 = to_burn(&[0.05, -0.03, 0.02], [1, 3]);
+
+        let vx = ball.parallel_transport_0_to_x(x.clone(), v0.clone());
+        let vx_v = vx.to_data().to_vec::<f32>().unwrap();
+        assert!(all_finite(&vx_v), "parallel transport non-finite");
+
+        // Manual check: scale = 2 / lambda_x = (1 - c||x||^2)
+        let x_v = x.to_data().to_vec::<f32>().unwrap();
+        let x_norm_sq: f32 = x_v.iter().map(|a| a * a).sum();
+        let expected_scale = 1.0 - ball.c * x_norm_sq;
+        let v0_v = v0.to_data().to_vec::<f32>().unwrap();
+        for i in 0..3 {
+            let expected = v0_v[i] * expected_scale;
+            assert!(
+                (vx_v[i] - expected).abs() < 1e-4,
+                "parallel transport dim {i}: got {} expected {}",
+                vx_v[i],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn multi_curvature_smoke() {
+        // Operations should produce finite results across curvature range.
+        for c in [0.1, 0.5, 1.0, 2.0, 5.0] {
+            let ball = PoincareBall::new(c);
+            let max = ball.max_norm();
+            let r = max * 0.5;
+            let x = ball.project(to_burn(&[r, 0.0, 0.0], [1, 3]));
+            let y = ball.project(to_burn(&[0.0, r, 0.0], [1, 3]));
+
+            let d = ball.distance(x.clone(), y.clone());
+            let d_v = d.to_data().to_vec::<f32>().unwrap();
+            assert!(all_finite(&d_v), "c={c}: distance non-finite");
+            assert!(d_v[0] > 0.0, "c={c}: distance should be positive");
+
+            let v = ball.log_map(x.clone(), y.clone());
+            let y2 = ball.exp_map(x, v);
+            let y_v = y.to_data().to_vec::<f32>().unwrap();
+            let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+            assert!(all_finite(&y2_v), "c={c}: roundtrip non-finite");
+            assert!(
+                l1(&y_v, &y2_v) < 0.1,
+                "c={c}: roundtrip error {}",
+                l1(&y_v, &y2_v)
+            );
+        }
+    }
+
     // --- Cross-validation against hyperball reference ---
 
     #[test]
@@ -408,7 +531,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(ProptestConfig::with_cases(128))]
 
         #[test]
         fn prop_distance_matches_hyperball(x0 in arb_point(3), y0 in arb_point(3)) {
@@ -526,6 +649,60 @@ mod tests {
 
             prop_assert!(l1(&y_burn, &y_ref) < 5e-2,
                 "exp_map mismatch l1={}", l1(&y_burn, &y_ref));
+        }
+
+        // Near-boundary: test at 95% of max norm for all core ops.
+        #[test]
+        fn prop_near_boundary_finite(x0 in arb_point(3), y0 in arb_point(3)) {
+            let c = 1.0f64;
+            let ball = PoincareBall::new(c);
+            let max = ball.max_norm() as f64;
+            let x0 = clamp_norm(x0, max * 0.95);
+            let y0 = clamp_norm(y0, max * 0.95);
+
+            let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
+            let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
+            let x = ball.project(to_burn(&x_f, [1, 3]));
+            let y = ball.project(to_burn(&y_f, [1, 3]));
+
+            let d = ball.distance(x.clone(), y.clone()).to_data().to_vec::<f32>().unwrap();
+            prop_assert!(all_finite(&d), "near-boundary distance non-finite");
+
+            let v = ball.log_map(x.clone(), y.clone());
+            let v_v = v.clone().to_data().to_vec::<f32>().unwrap();
+            prop_assert!(all_finite(&v_v), "near-boundary log_map non-finite");
+
+            let y2 = ball.exp_map(x, v).to_data().to_vec::<f32>().unwrap();
+            prop_assert!(all_finite(&y2), "near-boundary exp_map non-finite");
+        }
+
+        // Multi-curvature: test roundtrips at various curvatures.
+        #[test]
+        fn prop_multi_curvature_roundtrip(
+            x0 in arb_point(3),
+            y0 in arb_point(3),
+            c_idx in 0..5usize,
+        ) {
+            let curvatures = [0.1, 0.5, 1.0, 2.0, 5.0];
+            let c = curvatures[c_idx];
+            let ball = PoincareBall::new(c);
+            let max = ball.max_norm() as f64;
+            let x0 = clamp_norm(x0, max * 0.5);
+            let y0 = clamp_norm(y0, max * 0.5);
+
+            let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
+            let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
+            let x = ball.project(to_burn(&x_f, [1, 3]));
+            let y = ball.project(to_burn(&y_f, [1, 3]));
+            let y_v = y.clone().to_data().to_vec::<f32>().unwrap();
+
+            let v = ball.log_map(x.clone(), y);
+            let y2 = ball.exp_map(x, v);
+            let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+
+            prop_assert!(all_finite(&y2_v), "c={c}: roundtrip non-finite");
+            prop_assert!(l1(&y_v, &y2_v) < 0.15,
+                "c={c}: roundtrip error {}", l1(&y_v, &y2_v));
         }
     }
 }

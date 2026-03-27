@@ -17,9 +17,6 @@ default = []
 burn = { version = "0.20.0", default-features = false, features = ["std"] }
 burn-ndarray = { version = "0.20.0", default-features = true }
 
-# Utils
-rand = "0.9"
-thiserror = "2.0"
 
 [dev-dependencies]
 ndarray = "0.16"

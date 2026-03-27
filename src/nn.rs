@@ -201,14 +201,10 @@ mod tests {
     }
 
     #[test]
-    fn hgcn_local_dense_identity_adj_preserves_input() {
+    fn hgcn_local_dense_identity_adj_shapes() {
         let n = 4;
         let d = 3;
-        // Use init to get a fresh linear, then we need to set it to zero weights.
-        // Easier: construct with a zero-weight Linear.
-        let linear = LinearConfig::new(d, d).with_bias(true).init::<B>(&dev());
-        // We can't easily zero the weights without VarMap, so test shape only.
-        let layer = HGCNConv::new(linear, 1.0);
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
         let x = Tensor::<B, 2>::from_data(TensorData::new(vec![0.01f32; n * d], [n, d]), &dev());
         let mut adj_v = vec![0.0f32; n * n];
         for i in 0..n {
@@ -217,5 +213,54 @@ mod tests {
         let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
         let y = layer.forward_local_dense(x, adj);
         assert_eq!(y.dims(), [n, d]);
+    }
+
+    #[test]
+    fn forward_local_dense_and_forward_agree_on_identity_adj() {
+        // With identity adjacency, both forward paths should produce similar results
+        // because each node only aggregates from itself.
+        let n = 3;
+        let d = 3;
+        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let x = Tensor::<B, 2>::from_data(
+            TensorData::new(
+                vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
+                [n, d],
+            ),
+            &dev(),
+        );
+        let mut adj_v = vec![0.0f32; n * n];
+        for i in 0..n {
+            adj_v[i * n + i] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
+
+        // Both should apply: log -> linear -> adj(=I) @ x -> exp, so results match.
+        let y_origin = layer.forward(x.clone(), adj.clone());
+        let y_local = layer.forward_local_dense(x, adj);
+
+        let y_o = y_origin.to_data().to_vec::<f32>().unwrap();
+        let y_l = y_local.to_data().to_vec::<f32>().unwrap();
+
+        fn l1(a: &[f32], b: &[f32]) -> f32 {
+            a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum()
+        }
+
+        assert!(
+            y_o.iter().all(|v| v.is_finite()),
+            "forward produced non-finite"
+        );
+        assert!(
+            y_l.iter().all(|v| v.is_finite()),
+            "forward_local_dense produced non-finite"
+        );
+        // With identity adj, forward (origin basepoint) and forward_local_dense
+        // (per-node basepoint) use different tangent spaces but should be close
+        // for small inputs.
+        assert!(
+            l1(&y_o, &y_l) < 0.5,
+            "forward vs forward_local_dense diverged: l1={}",
+            l1(&y_o, &y_l)
+        );
     }
 }

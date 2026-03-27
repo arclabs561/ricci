@@ -4,56 +4,48 @@
 [![Documentation](https://docs.rs/propago/badge.svg)](https://docs.rs/propago)
 [![CI](https://github.com/arclabs561/propago/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/propago/actions/workflows/ci.yml)
 
-Graph learning primitives built on `candle` tensors.
+Graph learning primitives built on [Burn](https://burn.dev) tensors.
 
-This repo focuses on a small set of reusable building blocks (layers + small loops), not a full
-training framework.
+Small set of reusable building blocks (layers + geometry), not a full training framework.
+Runs on any Burn backend (ndarray, wgpu, tch, etc.).
 
 ## Quickstart
 
 ```toml
 [dependencies]
-propago = "0.1"
-candle-core = "0.9"
-candle-nn = "0.9"
+propago = "0.2"
+burn = { version = "0.20", default-features = false, features = ["std"] }
+burn-ndarray = "0.20"
 ```
 
-Hyperbolic distance on the Poincaré ball (Tensor-native):
+Hyperbolic distance on the Poincare ball:
 
 ```rust
-use candle_core::{Device, Tensor};
-use propago::hyperbolic::CandlePoincareBall;
+use burn::tensor::{backend::Backend, TensorData};
+use burn_ndarray::NdArray;
+use propago::PoincareBall;
 
-let dev = &Device::Cpu;
-let x = Tensor::from_vec(vec![0.10f32, 0.00, 0.00], (1, 3), dev)?;
-let y = Tensor::from_vec(vec![0.00f32, 0.10, 0.00], (1, 3), dev)?;
+type B = NdArray<f32>;
+let dev = <B as Backend>::Device::default();
+let ball = PoincareBall::new(1.0);
 
-let ball = CandlePoincareBall::new(1.0);
-let d = ball.distance(&x, &y)?.to_vec2::<f32>()?[0][0];
+let x = burn::tensor::Tensor::<B, 2>::from_data(
+    TensorData::new(vec![0.10f32, 0.00, 0.00], [1, 3]), &dev,
+);
+let y = burn::tensor::Tensor::<B, 2>::from_data(
+    TensorData::new(vec![0.00f32, 0.10, 0.00], [1, 3]), &dev,
+);
+let d = ball.distance(x, y).to_data().to_vec::<f32>().unwrap()[0];
 assert!(d >= 0.0);
-
-# Ok::<(), candle_core::Error>(())
 ```
-
-## Status / scope
-
-- Keep interfaces small so higher-level graph stacks can integrate without tight coupling.
-- `HGCNConv` uses a Tensor-native Poincaré ball implementation (`CandlePoincareBall`) so it can run
-  on Candle backends (CPU/GPU).
 
 ## API surface
 
-- `propago::GCNConv`: simple graph convolution (linear projection + adjacency matmul).
-- `propago::HGCNConv`: hyperbolic graph convolution on the Poincaré ball.
+- `propago::PoincareBall`: Poincare ball geometry (project, mobius_add, exp/log maps, distance, parallel transport).
+- `propago::GCNConv`: graph convolution (linear projection + adjacency matmul).
+- `propago::HGCNConv`: hyperbolic graph convolution on the Poincare ball.
 
-Notes:
-- Many ops assume inputs are shaped `[batch, d]` (row-major feature vectors).
-
-## Backends
-
-- **Candle (default)**: `--features backend-candle` (enabled by default).
-- **Burn (opt-in)**: `--features backend-burn` exposes Burn-tensor Poincaré ops.
-- **MLX (opt-in)**: `--features backend-mlx` builds `mlx-rs` and requires `cmake` + Xcode MetalToolchain; tests force CPU for determinism.
+Inputs are shaped `[batch, d]` (row-major feature vectors).
 
 ## License
 
