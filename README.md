@@ -39,6 +39,19 @@ let d = ball.distance(x, y).to_data().to_vec::<f32>().unwrap()[0];
 assert!(d >= 0.0);
 ```
 
+## Geometry
+
+The Poincare ball $\mathbb{B}^d_c = \{x \in \mathbb{R}^d : c\lVert x \rVert^2 < 1\}$ with curvature $-c$:
+
+| Operation | Formula |
+|-----------|---------|
+| Distance | $d_c(x, y) = \frac{2}{\sqrt{c}} \operatorname{arctanh}\bigl(\sqrt{c}\lVert -x \oplus_c y \rVert\bigr)$ |
+| Mobius addition | $x \oplus_c y = \frac{(1 + 2c\langle x,y\rangle + c\lVert y\rVert^2)x + (1 - c\lVert x\rVert^2)y}{1 + 2c\langle x,y\rangle + c^2\lVert x\rVert^2\lVert y\rVert^2}$ |
+| Exp map | $\exp_x^c(v) = x \oplus_c \bigl(\tanh\bigl(\frac{\sqrt{c}\lambda_x^c\lVert v\rVert}{2}\bigr)\frac{v}{\sqrt{c}\lVert v\rVert}\bigr)$ |
+| Log map | $\log_x^c(y) = \frac{2}{\sqrt{c}\lambda_x^c}\operatorname{arctanh}(\sqrt{c}\lVert -x \oplus_c y\rVert)\frac{-x \oplus_c y}{\lVert -x \oplus_c y\rVert}$ |
+
+where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
+
 ## API surface
 
 - `propago::PoincareBall`: Poincare ball geometry (project, mobius_add, exp/log maps, distance, parallel transport).
