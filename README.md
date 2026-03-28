@@ -4,10 +4,7 @@
 [![Documentation](https://docs.rs/propago/badge.svg)](https://docs.rs/propago)
 [![CI](https://github.com/arclabs561/propago/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/propago/actions/workflows/ci.yml)
 
-Graph learning primitives built on [Burn](https://burn.dev) tensors.
-
-Small set of reusable building blocks (layers + geometry), not a full training framework.
-Runs on any Burn backend (ndarray, wgpu, tch, etc.).
+Graph neural network layers.
 
 ## Quickstart
 
