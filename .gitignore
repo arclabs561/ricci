@@ -2,3 +2,4 @@
 /.cursor/
 Cargo.lock
 proptest-regressions/
+/semver-checks/
