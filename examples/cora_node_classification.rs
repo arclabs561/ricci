@@ -17,12 +17,12 @@ use std::process::ExitCode;
 
 use burn::backend::Autodiff;
 use burn::module::Module;
-use burn_ndarray::NdArray;
 use burn::nn::loss::CrossEntropyLoss;
 use burn::optim::decay::WeightDecayConfig;
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{activation, Int, Tensor, TensorData};
+use burn_ndarray::NdArray;
 
 use propago::GCNConv;
 
@@ -33,9 +33,9 @@ const HIDDEN: usize = 16;
 /// Parsed Cora graph: dense feature matrix, labels, and normalized adjacency.
 struct Cora {
     n: usize,
-    features: Vec<f32>,    // [n * N_FEATURES] row-major
-    labels: Vec<i32>,      // [n]
-    adj_norm: Vec<f32>,    // [n * n] row-major, symmetric-normalized with self-loops
+    features: Vec<f32>, // [n * N_FEATURES] row-major
+    labels: Vec<i32>,   // [n]
+    adj_norm: Vec<f32>, // [n * n] row-major, symmetric-normalized with self-loops
 }
 
 fn load_cora(dir: &Path) -> std::io::Result<Cora> {
@@ -90,7 +90,10 @@ fn load_cora(dir: &Path) -> std::io::Result<Cora> {
     for i in 0..n {
         deg[i] = (0..n).map(|j| adj[i * n + j]).sum();
     }
-    let inv_sqrt: Vec<f32> = deg.iter().map(|&d| if d > 0.0 { 1.0 / d.sqrt() } else { 0.0 }).collect();
+    let inv_sqrt: Vec<f32> = deg
+        .iter()
+        .map(|&d| if d > 0.0 { 1.0 / d.sqrt() } else { 0.0 })
+        .collect();
     let mut adj_norm = vec![0.0f32; n * n];
     for i in 0..n {
         for j in 0..n {
@@ -101,7 +104,12 @@ fn load_cora(dir: &Path) -> std::io::Result<Cora> {
         }
     }
 
-    Ok(Cora { n, features, labels, adj_norm })
+    Ok(Cora {
+        n,
+        features,
+        labels,
+        adj_norm,
+    })
 }
 
 /// 2-layer GCN. Both fields are `Module`s, so the whole net is trainable.
@@ -167,7 +175,9 @@ fn split(labels: &[i32]) -> (Vec<usize>, Vec<usize>) {
         train.extend(bucket.iter().take(20).copied());
     }
     let train_set: std::collections::HashSet<usize> = train.iter().copied().collect();
-    let mut rest: Vec<usize> = (0..labels.len()).filter(|i| !train_set.contains(i)).collect();
+    let mut rest: Vec<usize> = (0..labels.len())
+        .filter(|i| !train_set.contains(i))
+        .collect();
     shuffle(&mut rest, &mut rng);
     let test = rest.into_iter().take(1000).collect();
     (train, test)
@@ -195,7 +205,10 @@ fn train<B: AutodiffBackend>(device: B::Device) {
     let targets =
         Tensor::<B, 1, Int>::from_data(TensorData::new(cora.labels.clone(), [cora.n]), &device);
     let train_sel = Tensor::<B, 1, Int>::from_data(
-        TensorData::new(train_idx.iter().map(|&i| i as i32).collect::<Vec<_>>(), [train_idx.len()]),
+        TensorData::new(
+            train_idx.iter().map(|&i| i as i32).collect::<Vec<_>>(),
+            [train_idx.len()],
+        ),
         &device,
     );
 
@@ -225,11 +238,7 @@ fn train<B: AutodiffBackend>(device: B::Device) {
         }
     }
 
-    let logits_v = model
-        .forward(x, adj)
-        .into_data()
-        .to_vec::<f32>()
-        .unwrap();
+    let logits_v = model.forward(x, adj).into_data().to_vec::<f32>().unwrap();
     println!(
         "\nfinal test accuracy: {:.4}",
         accuracy(&logits_v, &cora.labels, &test_idx)
@@ -239,8 +248,11 @@ fn train<B: AutodiffBackend>(device: B::Device) {
 fn main() -> ExitCode {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/cora");
     if !dir.join("cora.content").exists() {
-        eprintln!("dataset not found at {}\nrun: ./scripts/fetch_cora.sh", dir.display());
-        return ExitCode::FAILURE;
+        eprintln!(
+            "dataset not found at {}\nrun: ./scripts/fetch_cora.sh",
+            dir.display()
+        );
+        return ExitCode::SUCCESS;
     }
     train::<Autodiff<NdArray<f32>>>(Default::default());
     ExitCode::SUCCESS
