@@ -24,3 +24,7 @@ burn-ndarray = { version = "0.20.0", default-features = true }
 ndarray = "0.16"
 proptest = "1.5"
 hyperball = "0.1"
+# Enable autodiff for the training example (dev-only; lib stays inference-only).
+# Cargo unifies these features with the normal `burn` dep when building propago's
+# own examples/tests, without affecting downstream consumers.
+burn = { version = "0.20.0", default-features = false, features = ["std", "autodiff"] }

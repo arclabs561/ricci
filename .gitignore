@@ -1,5 +1,7 @@
 /target/
 /.cursor/
 Cargo.lock
+# Real datasets fetched by scripts/fetch_*.sh (examples only)
+/data/
 proptest-regressions/
 /semver-checks/
