@@ -1,5 +1,6 @@
 //! Graph neural network layers on Burn tensors.
 
+use burn::module::Module;
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
@@ -7,6 +8,10 @@ use burn::tensor::Tensor;
 use crate::hyperbolic::PoincareBall;
 
 /// Graph Convolutional Network layer: `A_hat * X * W`.
+///
+/// Derives [`Module`] so it can be embedded in a trainable model and optimized
+/// by a Burn optimizer (see `examples/cora_node_classification.rs`).
+#[derive(Module, Debug)]
 pub struct GCNConv<B: Backend> {
     linear: Linear<B>,
 }
