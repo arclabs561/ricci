@@ -1,15 +1,22 @@
-//! 2-layer GCN node classification on Cora (Kipf & Welling 2017): classify each
-//! paper into 7 topics from bag-of-words features plus the citation graph.
+//! 2-layer GCN node classification on Planetoid/LBC citation graphs (Cora, Citeseer).
+//!
+//! Classifies each paper into a topic from bag-of-words features plus the
+//! citation graph (Kipf & Welling 2017). Dataset dims (feature count, class
+//! count) are detected from the data, so the same model runs on any
+//! linqs/LBC-format dataset (`<name>.content` + `<name>.cites`).
 //!
 //! ```sh
-//! ./scripts/fetch_cora.sh
-//! cargo run --release --example cora_node_classification
+//! ./scripts/fetch_cora.sh        # or ./scripts/fetch_citeseer.sh
+//! cargo run --release --example cora_node_classification           # cora (default)
+//! cargo run --release --example cora_node_classification citeseer  # citeseer
 //! ```
 //!
 //! Two [`GCNConv`] layers (`A_hat @ (X W)`) with a ReLU between, full-batch Adam
 //! with weight decay, cross-entropy on a 20-per-class split, accuracy on a
-//! 1000-node test split. `A_hat = D~^{-1/2} (A + I) D~^{-1/2}`. Expect test
-//! accuracy around 0.80.
+//! 1000-node test split. `A_hat = D~^{-1/2} (A + I) D~^{-1/2}`. Expect ~0.80
+//! test accuracy on Cora, ~0.70 on Citeseer.
+
+#![allow(clippy::needless_range_loop)]
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -26,23 +33,31 @@ use burn_ndarray::NdArray;
 
 use propago::GCNConv;
 
-const N_FEATURES: usize = 1433;
-const N_CLASSES: usize = 7;
 const HIDDEN: usize = 16;
 
-/// Parsed Cora graph: dense feature matrix, labels, and normalized adjacency.
-struct Cora {
+/// Parsed citation graph: dense features, labels, normalized adjacency, dims.
+struct Graph {
     n: usize,
-    features: Vec<f32>, // [n * N_FEATURES] row-major
+    n_features: usize,
+    n_classes: usize,
+    features: Vec<f32>, // [n * n_features] row-major
     labels: Vec<i32>,   // [n]
     adj_norm: Vec<f32>, // [n * n] row-major, symmetric-normalized with self-loops
 }
 
-fn load_cora(dir: &Path) -> std::io::Result<Cora> {
-    let content = std::fs::read_to_string(dir.join("cora.content"))?;
-    let cites = std::fs::read_to_string(dir.join("cora.cites"))?;
+/// Load an LBC-format graph (`<name>.content` = `id <features...> label`,
+/// `<name>.cites` = edges). Feature and class counts are detected from the data.
+fn load_planetoid(dir: &Path, name: &str) -> std::io::Result<Graph> {
+    let content = std::fs::read_to_string(dir.join(format!("{name}.content")))?;
+    let cites = std::fs::read_to_string(dir.join(format!("{name}.cites")))?;
 
-    // Stable class ids from sorted label names.
+    // cols = id + features + label, so n_features = cols - 2.
+    let n_features = content
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.split('\t').count().saturating_sub(2))
+        .unwrap_or(0);
+
     let mut label_names: Vec<&str> = content
         .lines()
         .filter(|l| !l.trim().is_empty())
@@ -50,6 +65,7 @@ fn load_cora(dir: &Path) -> std::io::Result<Cora> {
         .collect();
     label_names.sort_unstable();
     label_names.dedup();
+    let n_classes = label_names.len();
     let class_id: HashMap<&str, i32> = label_names
         .iter()
         .enumerate()
@@ -61,17 +77,15 @@ fn load_cora(dir: &Path) -> std::io::Result<Cora> {
     let mut labels = Vec::new();
     for line in content.lines().filter(|l| !l.trim().is_empty()) {
         let cols: Vec<&str> = line.split('\t').collect();
-        let paper_id = cols[0].to_string();
         let idx = id_to_idx.len();
-        id_to_idx.insert(paper_id, idx);
-        for f in &cols[1..=N_FEATURES] {
-            features.push(f.parse::<f32>().unwrap());
+        id_to_idx.insert(cols[0].to_string(), idx);
+        for f in &cols[1..=n_features] {
+            features.push(f.parse::<f32>().unwrap_or(0.0));
         }
-        labels.push(class_id[cols[N_FEATURES + 1]]);
+        labels.push(class_id[cols[n_features + 1]]);
     }
     let n = labels.len();
 
-    // Symmetric adjacency with self-loops.
     let mut adj = vec![0.0f32; n * n];
     for i in 0..n {
         adj[i * n + i] = 1.0;
@@ -104,8 +118,10 @@ fn load_cora(dir: &Path) -> std::io::Result<Cora> {
         }
     }
 
-    Ok(Cora {
+    Ok(Graph {
         n,
+        n_features,
+        n_classes,
         features,
         labels,
         adj_norm,
@@ -120,10 +136,10 @@ struct Gcn<B: Backend> {
 }
 
 impl<B: Backend> Gcn<B> {
-    fn init(device: &B::Device) -> Self {
+    fn init(n_features: usize, n_classes: usize, device: &B::Device) -> Self {
         Self {
-            gc1: GCNConv::init(N_FEATURES, HIDDEN, device),
-            gc2: GCNConv::init(HIDDEN, N_CLASSES, device),
+            gc1: GCNConv::init(n_features, HIDDEN, device),
+            gc2: GCNConv::init(HIDDEN, n_classes, device),
         }
     }
 
@@ -135,10 +151,10 @@ impl<B: Backend> Gcn<B> {
 }
 
 /// Fraction of `idx` nodes whose argmax logit matches the label.
-fn accuracy(logits: &[f32], labels: &[i32], idx: &[usize]) -> f64 {
+fn accuracy(logits: &[f32], labels: &[i32], idx: &[usize], n_classes: usize) -> f64 {
     let mut correct = 0;
     for &i in idx {
-        let row = &logits[i * N_CLASSES..(i + 1) * N_CLASSES];
+        let row = &logits[i * n_classes..(i + 1) * n_classes];
         let pred = row
             .iter()
             .enumerate()
@@ -163,9 +179,9 @@ fn shuffle(v: &mut [usize], state: &mut u64) {
 }
 
 /// 20-per-class train split and a 1000-node test split from the remainder.
-fn split(labels: &[i32]) -> (Vec<usize>, Vec<usize>) {
+fn split(labels: &[i32], n_classes: usize) -> (Vec<usize>, Vec<usize>) {
     let mut rng = 0x1234_5678_9abc_def0u64;
-    let mut by_class: Vec<Vec<usize>> = vec![Vec::new(); N_CLASSES];
+    let mut by_class: Vec<Vec<usize>> = vec![Vec::new(); n_classes];
     for (i, &c) in labels.iter().enumerate() {
         by_class[c as usize].push(i);
     }
@@ -183,27 +199,24 @@ fn split(labels: &[i32]) -> (Vec<usize>, Vec<usize>) {
     (train, test)
 }
 
-fn train<B: AutodiffBackend>(device: B::Device) {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/cora");
-    let cora = load_cora(&dir).unwrap();
-    let (train_idx, test_idx) = split(&cora.labels);
+fn train<B: AutodiffBackend>(device: B::Device, dir: &Path, name: &str) {
+    let g = load_planetoid(dir, name).unwrap();
+    let (train_idx, test_idx) = split(&g.labels, g.n_classes);
     println!(
-        "nodes: {}  features: {N_FEATURES}  classes: {N_CLASSES}  train: {}  test: {}",
-        cora.n,
+        "dataset: {name}  nodes: {}  features: {}  classes: {}  train: {}  test: {}",
+        g.n,
+        g.n_features,
+        g.n_classes,
         train_idx.len(),
         test_idx.len()
     );
 
     let x = Tensor::<B, 2>::from_data(
-        TensorData::new(cora.features.clone(), [cora.n, N_FEATURES]),
+        TensorData::new(g.features.clone(), [g.n, g.n_features]),
         &device,
     );
-    let adj = Tensor::<B, 2>::from_data(
-        TensorData::new(cora.adj_norm.clone(), [cora.n, cora.n]),
-        &device,
-    );
-    let targets =
-        Tensor::<B, 1, Int>::from_data(TensorData::new(cora.labels.clone(), [cora.n]), &device);
+    let adj = Tensor::<B, 2>::from_data(TensorData::new(g.adj_norm.clone(), [g.n, g.n]), &device);
+    let targets = Tensor::<B, 1, Int>::from_data(TensorData::new(g.labels.clone(), [g.n]), &device);
     let train_sel = Tensor::<B, 1, Int>::from_data(
         TensorData::new(
             train_idx.iter().map(|&i| i as i32).collect::<Vec<_>>(),
@@ -212,7 +225,7 @@ fn train<B: AutodiffBackend>(device: B::Device) {
         &device,
     );
 
-    let mut model = Gcn::<B>::init(&device);
+    let mut model = Gcn::<B>::init(g.n_features, g.n_classes, &device);
     let mut optim = AdamConfig::new()
         .with_weight_decay(Some(WeightDecayConfig::new(5e-4)))
         .init();
@@ -231,8 +244,8 @@ fn train<B: AutodiffBackend>(device: B::Device) {
 
         if epoch % 20 == 0 || epoch == 1 {
             let logits_v = logits.into_data().to_vec::<f32>().unwrap();
-            let tr = accuracy(&logits_v, &cora.labels, &train_idx);
-            let te = accuracy(&logits_v, &cora.labels, &test_idx);
+            let tr = accuracy(&logits_v, &g.labels, &train_idx, g.n_classes);
+            let te = accuracy(&logits_v, &g.labels, &test_idx, g.n_classes);
             let loss_v = loss.into_data().to_vec::<f32>().unwrap()[0];
             println!("epoch {epoch:>3}  loss {loss_v:.4}  train acc {tr:.4}  test acc {te:.4}");
         }
@@ -241,19 +254,24 @@ fn train<B: AutodiffBackend>(device: B::Device) {
     let logits_v = model.forward(x, adj).into_data().to_vec::<f32>().unwrap();
     println!(
         "\nfinal test accuracy: {:.4}",
-        accuracy(&logits_v, &cora.labels, &test_idx)
+        accuracy(&logits_v, &g.labels, &test_idx, g.n_classes)
     );
 }
 
 fn main() -> ExitCode {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/cora");
-    if !dir.join("cora.content").exists() {
+    let name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "cora".to_string());
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("data")
+        .join(&name);
+    if !dir.join(format!("{name}.content")).exists() {
         eprintln!(
-            "dataset not found at {}\nrun: ./scripts/fetch_cora.sh",
+            "dataset not found at {}\nrun: ./scripts/fetch_{name}.sh",
             dir.display()
         );
         return ExitCode::SUCCESS;
     }
-    train::<Autodiff<NdArray<f32>>>(Default::default());
+    train::<Autodiff<NdArray<f32>>>(Default::default(), &dir, &name);
     ExitCode::SUCCESS
 }
