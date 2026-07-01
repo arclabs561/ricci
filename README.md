@@ -57,6 +57,11 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 
 Inputs are shaped `[batch, d]` (row-major feature vectors).
 
+## Examples
+
+See [examples/README.md](examples/README.md) for runnable examples with
+captured output.
+
 ## License
 
 MIT OR Apache-2.0
