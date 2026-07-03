@@ -1,12 +1,12 @@
 //! Minimal HGCN smoke example.
 //!
 //! Run:
-//!   cargo run -p propago --example hgcn_smoke
+//!   cargo run -p ricci --example hgcn_smoke
 
 use burn::tensor::backend::Backend;
 use burn::tensor::TensorData;
 use burn_ndarray::NdArray;
-use propago::HGCNConv;
+use ricci::HGCNConv;
 
 type B = NdArray<f32>;
 

@@ -1,8 +1,8 @@
-# propago
+# ricci
 
-[![crates.io](https://img.shields.io/crates/v/propago.svg)](https://crates.io/crates/propago)
-[![Documentation](https://docs.rs/propago/badge.svg)](https://docs.rs/propago)
-[![CI](https://github.com/arclabs561/propago/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/propago/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/ricci.svg)](https://crates.io/crates/ricci)
+[![Documentation](https://docs.rs/ricci/badge.svg)](https://docs.rs/ricci)
+[![CI](https://github.com/arclabs561/ricci/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/ricci/actions/workflows/ci.yml)
 
 Graph neural network layers.
 
@@ -10,7 +10,7 @@ Graph neural network layers.
 
 ```toml
 [dependencies]
-propago = "0.2"
+ricci = "0.3"
 burn = { version = "0.20", default-features = false, features = ["std"] }
 burn-ndarray = "0.20"
 ```
@@ -20,7 +20,7 @@ Hyperbolic distance on the Poincare ball:
 ```rust
 use burn::tensor::{backend::Backend, TensorData};
 use burn_ndarray::NdArray;
-use propago::PoincareBall;
+use ricci::PoincareBall;
 
 type B = NdArray<f32>;
 let dev = <B as Backend>::Device::default();
@@ -51,9 +51,9 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 
 ## API surface
 
-- `propago::PoincareBall`: Poincare ball geometry (project, mobius_add, exp/log maps, distance, parallel transport).
-- `propago::GCNConv`: graph convolution (linear projection + adjacency matmul).
-- `propago::HGCNConv`: hyperbolic graph convolution on the Poincare ball.
+- `ricci::PoincareBall`: Poincare ball geometry (project, mobius_add, exp/log maps, distance, parallel transport).
+- `ricci::GCNConv`: graph convolution (linear projection + adjacency matmul).
+- `ricci::HGCNConv`: hyperbolic graph convolution on the Poincare ball.
 
 Inputs are shaped `[batch, d]` (row-major feature vectors).
 

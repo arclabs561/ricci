@@ -16,7 +16,7 @@ use burn::tensor::Tensor;
 /// ```
 /// use burn::tensor::{backend::Backend, TensorData};
 /// use burn_ndarray::NdArray;
-/// use propago::PoincareBall;
+/// use ricci::PoincareBall;
 ///
 /// type B = NdArray<f32>;
 /// let dev = <B as Backend>::Device::default();

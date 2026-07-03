@@ -8,7 +8,7 @@
 use burn::tensor::backend::Backend;
 use burn::tensor::{Tensor, TensorData};
 use burn_ndarray::NdArray;
-use propago::GCNConv;
+use ricci::GCNConv;
 
 type B = NdArray<f32>;
 

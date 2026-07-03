@@ -1,4 +1,4 @@
-# propago examples
+# ricci examples
 
 Each example is runnable from the repo root. Output excerpts below are real,
 captured from release runs.

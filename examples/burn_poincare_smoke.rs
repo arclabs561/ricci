@@ -1,12 +1,12 @@
 //! Minimal Poincare ball smoke example.
 //!
 //! Run:
-//!   cargo run -p propago --example burn_poincare_smoke
+//!   cargo run -p ricci --example burn_poincare_smoke
 
 use burn::tensor::backend::Backend;
 use burn::tensor::TensorData;
 use burn_ndarray::NdArray;
-use propago::PoincareBall;
+use ricci::PoincareBall;
 
 type B = NdArray<f32>;
 

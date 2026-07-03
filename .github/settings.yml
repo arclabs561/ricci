@@ -3,7 +3,7 @@
 
 repository:
   description: "Graph neural network layers"
-  homepage: "https://docs.rs/propago"
+  homepage: "https://docs.rs/ricci"
   private: false
   has_issues: true
   has_wiki: false

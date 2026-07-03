@@ -1,12 +1,12 @@
 [package]
-name = "propago"
-version = "0.2.0"
+name = "ricci"
+version = "0.3.0"
 edition = "2021"
 description = "Graph neural network primitives: GCN and hyperbolic GCN on Burn tensors"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/arclabs561/propago"
-homepage = "https://github.com/arclabs561/propago"
-documentation = "https://docs.rs/propago"
+repository = "https://github.com/arclabs561/ricci"
+homepage = "https://github.com/arclabs561/ricci"
+documentation = "https://docs.rs/ricci"
 keywords = ["gnn", "graph", "neural-network"]
 categories = ["science", "algorithms"]
 
@@ -25,6 +25,6 @@ ndarray = "0.16"
 proptest = "1.5"
 hyperball = "0.1"
 # Enable autodiff for the training example (dev-only; lib stays inference-only).
-# Cargo unifies these features with the normal `burn` dep when building propago's
+# Cargo unifies these features with the normal `burn` dep when building ricci's
 # own examples/tests, without affecting downstream consumers.
 burn = { version = "0.20.0", default-features = false, features = ["std", "autodiff"] }

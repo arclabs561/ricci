@@ -53,7 +53,7 @@ impl<B: Backend> GCNConv<B> {
 /// ```
 /// use burn::tensor::{backend::Backend, TensorData};
 /// use burn_ndarray::NdArray;
-/// use propago::HGCNConv;
+/// use ricci::HGCNConv;
 ///
 /// type B = NdArray<f32>;
 /// let dev = <B as Backend>::Device::default();

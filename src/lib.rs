@@ -1,4 +1,4 @@
-//! propago: graph learning primitives on Burn tensors.
+//! ricci: graph learning primitives on Burn tensors.
 //!
 //! Provides Poincare ball geometry and graph convolution layers that run on any
 //! Burn backend (ndarray, wgpu, tch, etc.).

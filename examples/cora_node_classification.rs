@@ -31,7 +31,7 @@ use burn::tensor::backend::{AutodiffBackend, Backend};
 use burn::tensor::{activation, Int, Tensor, TensorData};
 use burn_ndarray::NdArray;
 
-use propago::GCNConv;
+use ricci::GCNConv;
 
 const HIDDEN: usize = 16;
 
