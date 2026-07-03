@@ -8,11 +8,15 @@
 //! - [`GCNConv`]: graph convolutional layer (linear + adjacency matmul)
 //! - [`HGCNConv`]: hyperbolic graph convolution on the Poincare ball, with
 //!   optional activation via [`HGCNConv::forward_act`]
+//! - [`curvature`]: Ollivier-Ricci edge curvature (the crate's namesake), the
+//!   primitive behind curvature-based rewiring of oversquashed graphs
 
 #![forbid(unsafe_code)]
 
+pub mod curvature;
 pub mod hyperbolic;
 pub mod nn;
 
+pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, EdgeCurvature};
 pub use hyperbolic::PoincareBall;
 pub use nn::{GCNConv, HGCNConv};

@@ -18,10 +18,14 @@ default = []
 [dependencies]
 burn = { version = "0.20.0", default-features = false, features = ["std"] }
 burn-ndarray = { version = "0.20.0", default-features = true }
-
+# The curvature module composes the ecosystem's primitives: random-walk
+# measures (lapl), hop distances (graphops), entropic W1 (wass).
+graphops = "0.4"
+lapl = "0.1"
+ndarray = "0.16"
+wass = "0.2"
 
 [dev-dependencies]
-ndarray = "0.16"
 proptest = "1.5"
 hyperball = "0.1"
 # Enable autodiff for the training example (dev-only; lib stays inference-only).
