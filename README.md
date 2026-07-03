@@ -4,13 +4,14 @@
 [![Documentation](https://docs.rs/ricci/badge.svg)](https://docs.rs/ricci)
 [![CI](https://github.com/arclabs561/ricci/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/ricci/actions/workflows/ci.yml)
 
-Graph neural network layers.
+Graph neural network layers, plus Ollivier-Ricci edge curvature
+(the `curvature` module) for finding oversquashing bottlenecks.
 
 ## Quickstart
 
 ```toml
 [dependencies]
-ricci = "0.3"
+ricci = "0.4"
 burn = { version = "0.20", default-features = false, features = ["std"] }
 burn-ndarray = "0.20"
 ```

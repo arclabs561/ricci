@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-03
+
+### Added
+
+- `curvature` module: Ollivier-Ricci edge curvature
+  (`ollivier_ricci_curvatures`) with lazy random-walk `alpha` and entropic
+  `W1` via Sinkhorn. Composes `lapl` (transition measures), `graphops`
+  (hop distances), and `wass` (transport); these are new dependencies,
+  and `ndarray` moved from dev-dependency to dependency.
+
+## [0.3.0] - 2026-07-03
+
+### Changed
+
+- Renamed the crate from `propago` to `ricci`. No API changes; the old
+  name remains published at 0.2.0.
+
 ## [0.2.0] - 2026-06-10
 
 ### Added
