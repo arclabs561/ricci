@@ -1,6 +1,6 @@
 //! Graph neural network layers on Burn tensors.
 
-use burn::module::Module;
+use burn::module::{Ignored, Module};
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::backend::Backend;
 use burn::tensor::Tensor;
@@ -72,9 +72,14 @@ impl<B: Backend> GCNConv<B> {
 /// let y = layer.forward(x, adj);
 /// assert_eq!(y.dims(), [3, 4]);
 /// ```
+///
+/// Derives [`Module`] like [`GCNConv`], so it can be embedded in a trainable
+/// model; the ball geometry is a constant carried via [`Ignored`] (it holds
+/// no learnable parameters).
+#[derive(Module, Debug)]
 pub struct HGCNConv<B: Backend> {
     linear: Linear<B>,
-    ball: PoincareBall,
+    ball: Ignored<PoincareBall>,
 }
 
 impl<B: Backend> HGCNConv<B> {
@@ -82,7 +87,7 @@ impl<B: Backend> HGCNConv<B> {
     pub fn new(linear: Linear<B>, c: f64) -> Self {
         Self {
             linear,
-            ball: PoincareBall::new(c),
+            ball: Ignored(PoincareBall::new(c)),
         }
     }
 
@@ -90,7 +95,7 @@ impl<B: Backend> HGCNConv<B> {
     pub fn init(d: usize, c: f64, device: &B::Device) -> Self {
         Self {
             linear: LinearConfig::new(d, d).init(device),
-            ball: PoincareBall::new(c),
+            ball: Ignored(PoincareBall::new(c)),
         }
     }
 
@@ -101,7 +106,7 @@ impl<B: Backend> HGCNConv<B> {
 
     /// Access the Poincare ball geometry.
     pub fn ball(&self) -> &PoincareBall {
-        &self.ball
+        &self.ball.0
     }
 
     /// Forward pass using log/exp at the origin (no activation).

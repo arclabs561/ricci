@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-07-04
+
+### Added
+
+- `HGCNConv` derives Burn's `Module` (ball geometry carried as a constant),
+  matching `GCNConv`: the hyperbolic layer can now be embedded in trainable
+  models.
+- `CurvatureError` is re-exported at the crate root alongside the function
+  that returns it.
+- `#![warn(missing_docs)]`; `PoincareBall::new` documents its f64-to-f32
+  narrowing.
+
+### Fixed
+
+- README: version pin and API-surface list caught up with 0.5 (curvature,
+  features).
+
 ## [0.5.0] - 2026-07-03
 
 ### Added

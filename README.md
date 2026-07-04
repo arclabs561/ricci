@@ -11,7 +11,7 @@ Graph neural network layers, plus Ollivier-Ricci edge curvature
 
 ```toml
 [dependencies]
-ricci = "0.4"
+ricci = "0.6"
 burn = { version = "0.20", default-features = false, features = ["std"] }
 burn-ndarray = "0.20"
 ```
@@ -55,6 +55,11 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::PoincareBall`: Poincare ball geometry (project, mobius_add, exp/log maps, distance, parallel transport).
 - `ricci::GCNConv`: graph convolution (linear projection + adjacency matmul).
 - `ricci::HGCNConv`: hyperbolic graph convolution on the Poincare ball.
+  Both conv layers derive Burn's `Module`, so they embed in trainable models.
+- `ricci::curvature`: Ollivier-Ricci edge curvature over an adjacency matrix
+  (lazy-walk `alpha`, entropic `W1`).
+- `ricci::features`: homomorphism-count node features (walk and closed-walk
+  profiles), the interpretable expressiveness lift past 1-WL.
 
 Inputs are shaped `[batch, d]` (row-major feature vectors).
 

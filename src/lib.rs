@@ -14,13 +14,14 @@
 //!   the interpretable lift past 1-WL expressiveness
 
 #![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 pub mod curvature;
 pub mod features;
 pub mod hyperbolic;
 pub mod nn;
 
-pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, EdgeCurvature};
+pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, CurvatureError, EdgeCurvature};
 pub use features::hom_profile;
 pub use hyperbolic::PoincareBall;
 pub use nn::{GCNConv, HGCNConv};

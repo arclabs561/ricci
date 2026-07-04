@@ -50,6 +50,11 @@ pub struct PoincareBall {
 }
 
 impl PoincareBall {
+    /// Construct with curvature parameter `c > 0` (sectional curvature
+    /// `K = -c`) and the default epsilon.
+    ///
+    /// The parameter narrows to `f32` (the tensor compute precision), so
+    /// values needing more than f32 precision are rounded on entry.
     #[must_use]
     pub fn new(c: f64) -> Self {
         Self {
