@@ -70,32 +70,34 @@ captured output.
 
 ## References
 
+Each entry links to a mechanism-level summary in [docs/papers.md](docs/papers.md).
+
 - Ollivier. Ricci curvature of Markov chains on metric spaces. Journal of
-  Functional Analysis 256(3), 2009. The edge curvature computed here.
+  Functional Analysis 256(3), 2009. The edge curvature computed here. [notes](docs/papers.md#ricci-curvature-of-markov-chains-on-metric-spaces-ollivier-2009)
 - Topping, Di Giovanni, Chamberlain, Dong, Bronstein. Understanding
   over-squashing and bottlenecks on graphs via curvature. ICLR 2022.
   [arXiv:2111.14522](https://arxiv.org/abs/2111.14522). Negative curvature
-  marks the bottleneck edges.
+  marks the bottleneck edges. [notes](docs/papers.md#understanding-over-squashing-and-bottlenecks-on-graphs-via-curvature-topping-di-giovanni-chamberlain-dong-bronstein-iclr-2022)
 - Kipf, Welling. Semi-supervised classification with graph convolutional
   networks. ICLR 2017.
-  [arXiv:1609.02907](https://arxiv.org/abs/1609.02907). `GCNConv`.
-- Chami, Ying, Ré, Leskovec. Hyperbolic graph convolutional neural
-  networks. NeurIPS 2019.
-  [arXiv:1910.12933](https://arxiv.org/abs/1910.12933). `HGCNConv`.
+  [arXiv:1609.02907](https://arxiv.org/abs/1609.02907). `GCNConv`. [notes](docs/papers.md#semi-supervised-classification-with-graph-convolutional-networks-kipf-welling-iclr-2017)
 - Ganea, Bécigneul, Hofmann. Hyperbolic neural networks. NeurIPS 2018.
   [arXiv:1805.09112](https://arxiv.org/abs/1805.09112). The Möbius
-  operations behind `PoincareBall`.
+  operations behind `PoincareBall`. [notes](docs/papers.md#hyperbolic-neural-networks-ganea-becigneul-hofmann-neurips-2018)
+- Chami, Ying, Ré, Leskovec. Hyperbolic graph convolutional neural
+  networks. NeurIPS 2019.
+  [arXiv:1910.12933](https://arxiv.org/abs/1910.12933). `HGCNConv`. [notes](docs/papers.md#hyperbolic-graph-convolutional-neural-networks-chami-ying-re-leskovec-neurips-2019)
 - Cuturi. Sinkhorn distances: lightspeed computation of optimal
   transportation distances. NeurIPS 2013.
   [arXiv:1306.0895](https://arxiv.org/abs/1306.0895). The entropic `W1`
-  solved per edge.
+  solved per edge. [notes](docs/papers.md#sinkhorn-distances-cuturi-neurips-2013)
 - Dell, Grohe, Rattan. Lovász meets Weisfeiler and Leman. ICALP 2018.
   [arXiv:1802.08876](https://arxiv.org/abs/1802.08876). Homomorphism counts
-  as an expressiveness measure.
+  as an expressiveness measure. [notes](docs/papers.md#lovasz-meets-weisfeiler-and-leman-dell-grohe-rattan-icalp-2018)
 - Barceló, Geerts, Reutter, Ryschkov. Graph neural networks with local
   graph parameters. NeurIPS 2021.
   [arXiv:2106.06707](https://arxiv.org/abs/2106.06707). Hom-count features
-  in practice.
+  in practice. [notes](docs/papers.md#graph-neural-networks-with-local-graph-parameters-barcelo-geerts-reutter-ryschkov-neurips-2021)
 
 ## License
 
