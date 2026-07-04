@@ -10,13 +10,17 @@
 //!   optional activation via [`HGCNConv::forward_act`]
 //! - [`curvature`]: Ollivier-Ricci edge curvature (the crate's namesake), the
 //!   primitive behind curvature-based rewiring of oversquashed graphs
+//! - [`features`]: homomorphism-count node features (walks + closed walks),
+//!   the interpretable lift past 1-WL expressiveness
 
 #![forbid(unsafe_code)]
 
 pub mod curvature;
+pub mod features;
 pub mod hyperbolic;
 pub mod nn;
 
 pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, EdgeCurvature};
+pub use features::hom_profile;
 pub use hyperbolic::PoincareBall;
 pub use nn::{GCNConv, HGCNConv};

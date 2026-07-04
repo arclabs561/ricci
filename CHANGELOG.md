@@ -5,6 +5,14 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-03
+
+### Added
+
+- `features` module: `hom_profile` — homomorphism-count node features
+  (walk and closed-walk counts via `graphops`), the interpretable
+  expressiveness lift past 1-WL for GCN inputs.
+
 ## [0.4.0] - 2026-07-03
 
 ### Added

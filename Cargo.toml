@@ -1,6 +1,6 @@
 [package]
 name = "ricci"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Graph neural network primitives: GCN and hyperbolic GCN on Burn tensors"
 license = "MIT OR Apache-2.0"
@@ -20,7 +20,7 @@ burn = { version = "0.20.0", default-features = false, features = ["std"] }
 burn-ndarray = { version = "0.20.0", default-features = true }
 # The curvature module composes the ecosystem's primitives: random-walk
 # measures (lapl), hop distances (graphops), entropic W1 (wass).
-graphops = "0.4"
+graphops = "0.5"
 lapl = "0.1"
 ndarray = "0.16"
 wass = "0.2"
