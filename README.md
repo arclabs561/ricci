@@ -59,7 +59,7 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::curvature`: Ollivier-Ricci edge curvature over an adjacency matrix
   (lazy-walk `alpha`, entropic `W1`).
 - `ricci::features`: homomorphism-count node features (walk and closed-walk
-  profiles), the interpretable expressiveness lift past 1-WL.
+  profiles); these separate some graphs that 1-WL message passing cannot.
 
 Inputs are shaped `[batch, d]` (row-major feature vectors).
 
