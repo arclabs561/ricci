@@ -68,6 +68,35 @@ Inputs are shaped `[batch, d]` (row-major feature vectors).
 See [examples/README.md](examples/README.md) for runnable examples with
 captured output.
 
+## References
+
+- Ollivier. Ricci curvature of Markov chains on metric spaces. Journal of
+  Functional Analysis 256(3), 2009. The edge curvature computed here.
+- Topping, Di Giovanni, Chamberlain, Dong, Bronstein. Understanding
+  over-squashing and bottlenecks on graphs via curvature. ICLR 2022.
+  [arXiv:2111.14522](https://arxiv.org/abs/2111.14522). Negative curvature
+  marks the bottleneck edges.
+- Kipf, Welling. Semi-supervised classification with graph convolutional
+  networks. ICLR 2017.
+  [arXiv:1609.02907](https://arxiv.org/abs/1609.02907). `GCNConv`.
+- Chami, Ying, Ré, Leskovec. Hyperbolic graph convolutional neural
+  networks. NeurIPS 2019.
+  [arXiv:1910.12933](https://arxiv.org/abs/1910.12933). `HGCNConv`.
+- Ganea, Bécigneul, Hofmann. Hyperbolic neural networks. NeurIPS 2018.
+  [arXiv:1805.09112](https://arxiv.org/abs/1805.09112). The Möbius
+  operations behind `PoincareBall`.
+- Cuturi. Sinkhorn distances: lightspeed computation of optimal
+  transportation distances. NeurIPS 2013.
+  [arXiv:1306.0895](https://arxiv.org/abs/1306.0895). The entropic `W1`
+  solved per edge.
+- Dell, Grohe, Rattan. Lovász meets Weisfeiler and Leman. ICALP 2018.
+  [arXiv:1802.08876](https://arxiv.org/abs/1802.08876). Homomorphism counts
+  as an expressiveness measure.
+- Barceló, Geerts, Reutter, Ryschkov. Graph neural networks with local
+  graph parameters. NeurIPS 2021.
+  [arXiv:2106.06707](https://arxiv.org/abs/2106.06707). Hom-count features
+  in practice.
+
 ## License
 
 MIT OR Apache-2.0
