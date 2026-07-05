@@ -1,6 +1,6 @@
 [package]
 name = "ricci"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Graph neural network primitives: GCN and hyperbolic GCN on Burn tensors"
 license = "MIT OR Apache-2.0"
