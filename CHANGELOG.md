@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `NBFConv`: conditional message passing (Zhu et al., NeurIPS 2021) —
+  one generalized Bellman-Ford iteration with edge-type representations as
+  forward-time inputs, boundary condition re-added per layer, and
+  indicator-initialized pair representations.
+- `relgraph::relation_graph`: the graph of relations (Galkin et al., ICLR
+  2024) — four interaction-type adjacencies over `2 * num_relations`
+  relation nodes, inverses included. With `NBFConv` this is the two-stage
+  conditional propagation substrate; oracle tests pin hand-enumerable
+  interactions, relation-renaming equivariance, source-conditioning, and
+  permutation equivariance.
+
 ## [0.7.0] - 2026-07-04
 
 ### Added

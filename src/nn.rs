@@ -346,6 +346,83 @@ impl<B: Backend> RGCNConv<B> {
     }
 }
 
+/// One layer of conditional message passing (NBFNet-style; Zhu et al.,
+/// NeurIPS 2021): `h' = Update(Σ_t A_t (h ⊙ rel_t) + h0)`.
+///
+/// The per-edge-type representations `rel` are INPUTS to the forward pass,
+/// not learned parameters of the layer — the property that lets one
+/// trained layer run on graphs with unseen edge vocabularies, provided
+/// something upstream supplies the representations (Galkin et al., ICLR
+/// 2024 supply them from a graph of relations built by
+/// [`relation_graph`](crate::relgraph::relation_graph)). The message is
+/// the non-parametric DistMult composition (elementwise product), the
+/// aggregation is a sum, and the boundary condition `h0` is re-added every
+/// layer, per the generalized Bellman-Ford iteration those papers
+/// parameterize. Adjacencies are caller-normalized (or left binary, as in
+/// the source papers), as with every conv in this crate.
+///
+/// Conditioning happens through `h0`: initialize it as an indicator (the
+/// labeling trick — the query node's row set to ones or to a query
+/// representation, zeros elsewhere) and every node's output becomes a
+/// PAIR representation relative to that source, not an absolute node
+/// embedding.
+#[derive(Module, Debug)]
+pub struct NBFConv<B: Backend> {
+    update: Linear<B>,
+}
+
+impl<B: Backend> NBFConv<B> {
+    /// Construct with a fresh `Linear(d, d)` update transform.
+    pub fn init(d: usize, device: &B::Device) -> Self {
+        Self {
+            update: LinearConfig::new(d, d).init(device),
+        }
+    }
+
+    /// Fraction of nodes the conditioning signal has reached: rows of `h`
+    /// with any nonzero coordinate. The cheap per-layer diagnostic for
+    /// conditional propagation: a node never reached from the indicator
+    /// keeps a degenerate pair representation (`Update` of zeros), so
+    /// coverage should climb toward the source's true reachable set as
+    /// layers stack; flat-lining early means the graph (or its
+    /// normalization) is starving the propagation.
+    pub fn coverage(h: &Tensor<B, 2>) -> f32 {
+        let [n, d] = h.dims();
+        let v: Vec<f32> = h.clone().into_data().to_vec().unwrap();
+        let reached = (0..n)
+            .filter(|i| (0..d).any(|k| v[i * d + k] != 0.0))
+            .count();
+        reached as f32 / n.max(1) as f32
+    }
+
+    /// Forward one Bellman-Ford iteration.
+    ///
+    /// `h`: node states `[N, d]`. `h0`: the boundary condition `[N, d]`
+    /// (re-added every layer). `adjs`: one `[N, N]` adjacency per edge
+    /// type. `rel`: edge-type representations `[num_types, d]`, row `t`
+    /// scaling messages through `adjs[t]`.
+    ///
+    /// # Panics
+    /// Panics if `adjs.len()` differs from `rel`'s first dimension.
+    pub fn forward(
+        &self,
+        h: Tensor<B, 2>,
+        h0: Tensor<B, 2>,
+        adjs: &[Tensor<B, 2>],
+        rel: Tensor<B, 2>,
+    ) -> Tensor<B, 2> {
+        let [num_types, d] = rel.dims();
+        assert_eq!(adjs.len(), num_types, "one adjacency per edge type");
+        let mut agg = h0;
+        for (t, adj) in adjs.iter().enumerate() {
+            let w = rel.clone().slice([t..t + 1, 0..d]); // [1, d]
+            let scaled = h.clone() * w; // broadcast over rows
+            agg = agg + adj.clone().matmul(scaled);
+        }
+        self.update.forward(agg)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +496,219 @@ mod tests {
         assert_eq!(y.dims(), [n, d]);
         // Shared bases: 2 * d * d + coefficients 6 * 2 < full 6 * d * d.
         assert!(nb * d * d + r * nb < r * d * d);
+    }
+
+    /// Conditionality: with everything else fixed, moving the indicator to
+    /// a different source node changes the outputs. Pair representations,
+    /// not node embeddings.
+    #[test]
+    fn nbf_output_is_conditioned_on_the_source() {
+        let (n, d) = (4, 3);
+        let layer = NBFConv::<B>::init(d, &dev());
+        let mut ring = vec![0.0f32; n * n];
+        for i in 0..n {
+            ring[i * n + (i + 1) % n] = 1.0;
+        }
+        let adj = Tensor::from_data(TensorData::new(ring, [n, n]), &dev());
+        let rel = Tensor::from_data(TensorData::new(vec![0.5f32; d], [1, d]), &dev());
+        let indicator = |src: usize| {
+            let mut v = vec![0.0f32; n * d];
+            for j in 0..d {
+                v[src * d + j] = 1.0;
+            }
+            Tensor::<B, 2>::from_data(TensorData::new(v, [n, d]), &dev())
+        };
+        let h = Tensor::zeros([n, d], &dev());
+        let a: Vec<f32> = layer
+            .forward(
+                h.clone(),
+                indicator(0),
+                std::slice::from_ref(&adj),
+                rel.clone(),
+            )
+            .into_data()
+            .to_vec()
+            .unwrap();
+        let b: Vec<f32> = layer
+            .forward(h, indicator(2), &[adj], rel)
+            .into_data()
+            .to_vec()
+            .unwrap();
+        let diff: f32 = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).sum();
+        assert!(diff > 1e-4, "indicator position must matter: {diff}");
+    }
+
+    /// Vocabulary invariance: permuting node ids (adjacency, boundary, and
+    /// states consistently) permutes the outputs the same way. Nothing in
+    /// the layer depends on absolute identity.
+    #[test]
+    fn nbf_is_permutation_equivariant() {
+        let (n, d) = (3, 2);
+        let layer = NBFConv::<B>::init(d, &dev());
+        let adj_v = vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0f32];
+        let adj = Tensor::from_data(TensorData::new(adj_v.clone(), [n, n]), &dev());
+        let h_v: Vec<f32> = (0..n * d).map(|i| i as f32 / 7.0).collect();
+        let h = Tensor::from_data(TensorData::new(h_v.clone(), [n, d]), &dev());
+        let h0 = Tensor::zeros([n, d], &dev());
+        let rel = Tensor::from_data(TensorData::new(vec![1.0f32; d], [1, d]), &dev());
+        let out: Vec<f32> = layer
+            .forward(h, h0.clone(), &[adj], rel.clone())
+            .into_data()
+            .to_vec()
+            .unwrap();
+
+        // Permutation sigma: 0->1, 1->2, 2->0 (P[sigma(i)][i] = 1).
+        let sigma = [1usize, 2, 0];
+        let mut padj = vec![0.0f32; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                if adj_v[i * n + j] == 1.0 {
+                    padj[sigma[i] * n + sigma[j]] = 1.0;
+                }
+            }
+        }
+        let mut ph = vec![0.0f32; n * d];
+        for i in 0..n {
+            for k in 0..d {
+                ph[sigma[i] * d + k] = h_v[i * d + k];
+            }
+        }
+        let pout: Vec<f32> = layer
+            .forward(
+                Tensor::from_data(TensorData::new(ph, [n, d]), &dev()),
+                h0,
+                &[Tensor::from_data(TensorData::new(padj, [n, n]), &dev())],
+                rel,
+            )
+            .into_data()
+            .to_vec()
+            .unwrap();
+        for i in 0..n {
+            for k in 0..d {
+                let want = out[i * d + k];
+                let got = pout[sigma[i] * d + k];
+                assert!(
+                    (want - got).abs() < 1e-5,
+                    "output must permute with nodes at ({i},{k})"
+                );
+            }
+        }
+    }
+
+    /// Coverage climbs with layers on a directed path graph: the indicator
+    /// reaches one more node per iteration (before the update transform's
+    /// bias blurs strict zeros, coverage is measured pre-update here by
+    /// tracking a bias-free layer).
+    #[test]
+    fn nbf_coverage_tracks_propagation() {
+        let (n, d) = (4, 2);
+        // Path 0 -> 1 -> 2 -> 3.
+        let mut path = vec![0.0f32; n * n];
+        for i in 0..n - 1 {
+            path[(i + 1) * n + i] = 1.0; // message flows source -> out
+        }
+        let adj = Tensor::from_data(TensorData::new(path, [n, n]), &dev());
+        let rel = Tensor::from_data(TensorData::new(vec![1.0f32; d], [1, d]), &dev());
+        let mut ind = vec![0.0f32; n * d];
+        for (slot, v) in ind.iter_mut().take(d).zip(std::iter::repeat(1.0)) {
+            *slot = v; // indicator at node 0 (row 0)
+        }
+        let h0 = Tensor::<B, 2>::from_data(TensorData::new(ind, [n, d]), &dev());
+        // Bias-free propagation: agg = h0 + A(h ∘ rel), no update transform,
+        // mirroring the layer's aggregation to keep zeros exact.
+        let mut h = Tensor::<B, 2>::zeros([n, d], &dev());
+        let mut prev = 0.0;
+        for _ in 0..4 {
+            h = h0.clone()
+                + adj
+                    .clone()
+                    .matmul(h.clone() * rel.clone().slice([0..1, 0..d]));
+            let c = NBFConv::<B>::coverage(&h);
+            assert!(c > prev, "coverage must climb: {prev} -> {c}");
+            prev = c;
+        }
+        assert_eq!(prev, 1.0, "path fully reached: boundary + 3 hops");
+    }
+
+    /// Two-stage composition on a toy KG: relation graph -> conditional
+    /// relation representations -> entity-level propagation -> scores.
+    /// Structure only; asserts shapes and source-conditioning end to end.
+    #[test]
+    fn two_stage_conditional_propagation_composes() {
+        use crate::relgraph::relation_graph;
+        let d = 4;
+        let triples = [(0usize, 0usize, 1usize), (1, 1, 2), (2, 0, 3)];
+        let (n_ent, n_rel) = (4, 2);
+        let rel_nodes = 2 * n_rel;
+
+        // Stage 1: query-conditioned relation representations.
+        let rgraph = relation_graph::<B>(&triples, n_rel, &dev());
+        let fund = Tensor::from_data(
+            TensorData::new((0..4 * d).map(|i| 0.1 + i as f32 / 20.0).collect(), [4, d]),
+            &dev(),
+        );
+        let rel_layer = NBFConv::<B>::init(d, &dev());
+        let query_rel = 0usize;
+        let mut ind = vec![0.0f32; rel_nodes * d];
+        for k in 0..d {
+            ind[query_rel * d + k] = 1.0; // all-ones labeling trick
+        }
+        let h0r = Tensor::from_data(TensorData::new(ind, [rel_nodes, d]), &dev());
+        let mut hr = Tensor::zeros([rel_nodes, d], &dev());
+        for _ in 0..2 {
+            hr = rel_layer.forward(hr, h0r.clone(), &rgraph, fund.clone());
+        }
+        assert_eq!(hr.dims(), [rel_nodes, d]);
+
+        // Stage 2: entity propagation with those representations as edge
+        // features (adjacency per relation node, both directions).
+        let mut adjs = Vec::new();
+        for r in 0..rel_nodes {
+            let mut m = vec![0.0f32; n_ent * n_ent];
+            for &(h, rr, t) in &triples {
+                if rr == r {
+                    m[h * n_ent + t] = 1.0;
+                }
+                if rr + n_rel == r {
+                    m[t * n_ent + h] = 1.0;
+                }
+            }
+            adjs.push(Tensor::from_data(
+                TensorData::new(m, [n_ent, n_ent]),
+                &dev(),
+            ));
+        }
+        let ent_layer = NBFConv::<B>::init(d, &dev());
+        let head = 0usize;
+        let mut ind_e = vec![0.0f32; n_ent * d];
+        for k in 0..d {
+            ind_e[head * d + k] = 1.0;
+        }
+        let h0e = Tensor::from_data(TensorData::new(ind_e, [n_ent, d]), &dev());
+        let mut he = Tensor::zeros([n_ent, d], &dev());
+        for _ in 0..3 {
+            he = ent_layer.forward(he, h0e.clone(), &adjs, hr.clone());
+        }
+        assert_eq!(he.dims(), [n_ent, d]);
+        // Conditioning flows end to end: a different query relation gives
+        // different entity states.
+        let mut ind2 = vec![0.0f32; rel_nodes * d];
+        for k in 0..d {
+            ind2[d + k] = 1.0;
+        }
+        let h0r2 = Tensor::from_data(TensorData::new(ind2, [rel_nodes, d]), &dev());
+        let mut hr2 = Tensor::zeros([rel_nodes, d], &dev());
+        for _ in 0..2 {
+            hr2 = rel_layer.forward(hr2, h0r2.clone(), &rgraph, fund.clone());
+        }
+        let mut he2 = Tensor::zeros([n_ent, d], &dev());
+        for _ in 0..3 {
+            he2 = ent_layer.forward(he2, h0e.clone(), &adjs, hr2.clone());
+        }
+        let a: Vec<f32> = he.into_data().to_vec().unwrap();
+        let b: Vec<f32> = he2.into_data().to_vec().unwrap();
+        let diff: f32 = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).sum();
+        assert!(diff > 1e-4, "query relation must condition entity states");
     }
 
     #[test]

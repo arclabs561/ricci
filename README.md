@@ -57,6 +57,10 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::HGCNConv`: hyperbolic graph convolution on the Poincare ball.
 - `ricci::RGCNConv`: relational graph convolution (per-relation transforms
   over an adjacency stack, optional basis decomposition) for typed graphs.
+- `ricci::NBFConv`: conditional message passing (edge-type representations
+  as forward inputs; indicator-initialized pair representations).
+- `ricci::relgraph`: the graph of relations (four interaction-type
+  adjacencies over relation nodes, inverses included).
   All conv layers derive Burn's `Module`, so they embed in trainable models.
 - `ricci::curvature`: Ollivier-Ricci edge curvature over an adjacency matrix
   (lazy-walk `alpha`, entropic `W1`).
@@ -103,6 +107,12 @@ Each entry links to a mechanism-level summary in [docs/papers.md](docs/papers.md
 - Schlichtkrull, Kipf, Bloem, van den Berg, Titov, Welling. Modeling
   relational data with graph convolutional networks. ESWC 2018.
   [arXiv:1703.06103](https://arxiv.org/abs/1703.06103). `RGCNConv`. [notes](docs/papers.md#modeling-relational-data-with-graph-convolutional-networks-schlichtkrull-et-al-eswc-2018)
+- Zhu, Zhang, Xhonneux, Tang. Neural Bellman-Ford networks: a general
+  graph neural network framework for link prediction. NeurIPS 2021.
+  [arXiv:2106.06935](https://arxiv.org/abs/2106.06935). `NBFConv`. [notes](docs/papers.md#neural-bellman-ford-networks-zhu-zhang-xhonneux-tang-neurips-2021)
+- Galkin, Yuan, Mostafa, Tang, Zhu. Towards foundation models for
+  knowledge graph reasoning. ICLR 2024.
+  [arXiv:2310.04562](https://arxiv.org/abs/2310.04562). `relgraph`. [notes](docs/papers.md#towards-foundation-models-for-knowledge-graph-reasoning-galkin-yuan-mostafa-tang-zhu-iclr-2024)
 
 ## License
 

@@ -115,3 +115,43 @@ ricci takes: `RGCNConv` is the layer with the basis decomposition
 implemented (block-diagonal is not); adjacencies are caller-normalized as
 with `GCNConv`, and both directions of a relation enter as separate stack
 entries, per the paper's convention.
+
+### Neural Bellman-Ford networks (Zhu, Zhang, Xhonneux, Tang, NeurIPS 2021)
+
+Casts link prediction as a path problem: the representation of a node pair
+is the generalized sum over paths of the generalized product of edge
+representations, solvable by the generalized Bellman-Ford iteration when
+the operators form a semiring — Katz, personalized PageRank, graph
+distance, widest path (`max`/`min`), and most-reliable path (`max`/`×`)
+are exact instances. NBFNet relaxes the semiring: a learned indicator
+initializes the source node (the labeling trick), a relational message
+function replaces the product (DistMult-style scaling works best with sum
+aggregation), and outputs are PAIR representations conditioned on the
+source, which is what makes the method inductive. Six layers suffice; the
+paper also reads out top-k path interpretations via edge-importance
+gradients, and names its own limit: only simple edge prediction, not
+complex logical queries.
+
+ricci takes: `NBFConv` is one iteration of the neuralized Bellman-Ford
+update, with edge-type representations as forward-time inputs and the
+boundary condition re-added each layer. The semiring instances the paper
+generalizes are the same algebra family heyting evaluates exactly.
+
+### Towards foundation models for knowledge graph reasoning (Galkin, Yuan, Mostafa, Tang, Zhu, ICLR 2024)
+
+ULTRA's observation: relation vocabularies do not transfer across KGs, but
+relation-to-relation INTERACTIONS do. Build a graph of relations —
+inverses included as nodes — with four structure-only interaction types
+(tail-to-head, head-to-head, head-to-tail, tail-to-tail); run conditional
+message passing over it with an all-ones indicator on the query relation
+(learnable pieces per layer: four interaction embeddings and a linear
+update); the resulting relative relation representations feed an
+entity-level NBFNet as edge features. One 177k-parameter model pre-trained
+on three KGs zero-shot transfers to 50+ unseen KGs, on average beating
+supervised per-graph baselines (0.395 vs 0.344 MRR); ablations show the
+conditioning is load-bearing (unconditional encoding drops total-average
+MRR from 0.366 to 0.192).
+
+ricci takes: `relgraph::relation_graph` builds exactly those four
+adjacencies (inverse relations as nodes), and `NBFConv` serves both stages
+because its edge representations are inputs, not parameters.

@@ -20,8 +20,9 @@ pub mod curvature;
 pub mod features;
 pub mod hyperbolic;
 pub mod nn;
+pub mod relgraph;
 
 pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, CurvatureError, EdgeCurvature};
 pub use features::hom_profile;
 pub use hyperbolic::PoincareBall;
-pub use nn::{GCNConv, HGCNConv, RGCNConv};
+pub use nn::{GCNConv, HGCNConv, NBFConv, RGCNConv};
