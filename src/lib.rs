@@ -21,6 +21,7 @@ pub mod features;
 pub mod hyperbolic;
 pub mod nn;
 pub mod relgraph;
+pub mod scatter;
 
 pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, CurvatureError, EdgeCurvature};
 pub use features::hom_profile;
