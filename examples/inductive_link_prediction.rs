@@ -44,6 +44,7 @@ use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::Backend;
 use burn::tensor::{activation, Int, Tensor, TensorData};
 use burn_ndarray::NdArray;
+use ricci::scatter::{scatter_max, scatter_min};
 use ricci::NBFConv;
 
 type TB = Autodiff<NdArray<f32>>;
@@ -73,13 +74,17 @@ struct NbfNet<B: Backend> {
     // linear is the sum of two linears on the parts, so adding this
     // self-state path to forward_edges' output is exactly equivalent.
     self_lin: Vec<Linear<B>>,
+    // PNA mode (AGG=pna): 4 statistics x 3 degree scalers -> 12d features
+    // per node, combined by this linear instead of NBFConv's update.
+    stats_lin: Vec<Linear<B>>,
     norms: Vec<LayerNorm<B>>, // sum aggregation over hub nodes explodes without per-layer normalization
     head1: Linear<B>,
     head2: Linear<B>,
     n_rel2: burn::module::Ignored<usize>,
+    pna: burn::module::Ignored<bool>,
 }
 
-fn init_model<B: Backend>(n_rel2: usize, device: &B::Device) -> NbfNet<B> {
+fn init_model<B: Backend>(n_rel2: usize, pna: bool, device: &B::Device) -> NbfNet<B> {
     let emb = |rows: usize| {
         burn::module::Param::initialized(
             burn::module::ParamId::new(),
@@ -100,12 +105,16 @@ fn init_model<B: Backend>(n_rel2: usize, device: &B::Device) -> NbfNet<B> {
         self_lin: (0..LAYERS)
             .map(|_| LinearConfig::new(DIM, DIM).with_bias(false).init(device))
             .collect(),
+        stats_lin: (0..LAYERS)
+            .map(|_| LinearConfig::new(12 * DIM, DIM).init(device))
+            .collect(),
         norms: (0..LAYERS)
             .map(|_| LayerNormConfig::new(DIM).init(device))
             .collect(),
         head1: LinearConfig::new(2 * DIM, 2 * DIM).init(device),
         head2: LinearConfig::new(2 * DIM, 1).init(device),
         n_rel2: burn::module::Ignored(n_rel2),
+        pna: burn::module::Ignored(pna),
     }
 }
 
@@ -121,6 +130,7 @@ impl<B: Backend> NbfNet<B> {
         heads: Tensor<B, 1, Int>,
         tails: Tensor<B, 1, Int>,
         etypes: Tensor<B, 1, Int>,
+        tails_host: &[usize],
         device: &B::Device,
     ) -> Tensor<B, 3> {
         let q = sources.len();
@@ -141,26 +151,83 @@ impl<B: Backend> NbfNet<B> {
         // h0 is [Q, N, d]. States start AT the boundary (not zero), so
         // layer 1 already propagates from the source: six layers, six hops.
         let h0 = mask * rq_flat.clone().reshape([q, 1, DIM]);
+        // Degree scalers for PNA (recomputed per call: edge drops change
+        // degrees). degree_out + 1 counts the boundary as one message.
+        let (degp1, scales) = if self.pna.0 {
+            let mut deg = vec![1.0f32; n];
+            for &t in tails_host {
+                deg[t] += 1.0;
+            }
+            let logd: Vec<f32> = deg.iter().map(|d| d.ln()).collect();
+            let smean = (logd.iter().sum::<f32>() / n as f32).max(1e-6);
+            let mut sc = Vec::with_capacity(n * 3);
+            for &l in &logd {
+                let s = l / smean;
+                sc.extend_from_slice(&[1.0, s, 1.0 / s.max(0.01)]);
+            }
+            (
+                Tensor::<B, 3>::from_data(TensorData::new(deg, [1, n, 1]), device),
+                Tensor::<B, 4>::from_data(TensorData::new(sc, [1, n, 1, 3]), device),
+            )
+        } else {
+            (
+                Tensor::zeros([1, 1, 1], device),
+                Tensor::zeros([1, 1, 1, 1], device),
+            )
+        };
         let mut h = h0.clone();
-        for (((layer, norm), proj), selfl) in self
+        for ((((layer, norm), proj), selfl), statsl) in self
             .layers
             .iter()
             .zip(self.norms.iter())
             .zip(self.rel_proj.iter())
             .zip(self.self_lin.iter())
+            .zip(self.stats_lin.iter())
         {
             // Query-conditional relation representations for this layer.
             let rel = proj
                 .forward(rq_flat.clone())
                 .reshape([q, self.n_rel2.0, DIM]);
-            let out = layer.forward_edges(
-                h.clone(),
-                h0.clone(),
-                heads.clone(),
-                tails.clone(),
-                etypes.clone(),
-                rel,
-            ) + selfl.forward(h.clone());
+            let msgs_out = if self.pna.0 {
+                // PNA aggregation (Corso et al., NeurIPS 2020) as in the
+                // reference layer: mean/max/min/std over incoming messages
+                // (boundary included as one message), times three degree
+                // scalers (identity, log-degree, inverse log-degree).
+                let msgs = h.clone().select(1, heads.clone()) * rel.select(1, etypes.clone());
+                let zeros = || Tensor::<B, 3>::zeros([q, n, DIM], device);
+                let sums = zeros().select_assign(
+                    1,
+                    tails.clone(),
+                    msgs.clone(),
+                    burn::tensor::IndexingUpdateOp::Add,
+                );
+                let sq_sums = zeros().select_assign(
+                    1,
+                    tails.clone(),
+                    msgs.clone().powf_scalar(2.0),
+                    burn::tensor::IndexingUpdateOp::Add,
+                );
+                let mean = (sums + h0.clone()) / degp1.clone();
+                let sq_mean = (sq_sums + h0.clone().powf_scalar(2.0)) / degp1.clone();
+                let mx = scatter_max(msgs.clone(), tails_host, n, 0.0).max_pair(h0.clone());
+                let mn = scatter_min(msgs, tails_host, n, 0.0).min_pair(h0.clone());
+                let std = (sq_mean - mean.clone().powf_scalar(2.0))
+                    .clamp_min(1e-6)
+                    .sqrt();
+                let feats = Tensor::cat(vec![mean, mx, mn, std], 2).reshape([q, n, 4 * DIM, 1]);
+                let pna = (feats * scales.clone()).reshape([q, n, 12 * DIM]);
+                statsl.forward(pna)
+            } else {
+                layer.forward_edges(
+                    h.clone(),
+                    h0.clone(),
+                    heads.clone(),
+                    tails.clone(),
+                    etypes.clone(),
+                    rel,
+                )
+            };
+            let out = msgs_out + selfl.forward(h.clone());
             // Residual short-cut after norm + activation, as in the reference.
             h = activation::relu(norm.forward(out)) + h;
         }
@@ -225,7 +292,9 @@ fn main() {
     );
 
     let device = <TB as Backend>::Device::default();
-    let mut model = init_model::<TB>(n_rel2, &device);
+    let pna = std::env::var("AGG").is_ok_and(|v| v == "pna");
+    eprintln!("aggregation: {}", if pna { "pna" } else { "sum" });
+    let mut model = init_model::<TB>(n_rel2, pna, &device);
     // Burn's Adam epsilon defaults to 1e-5; match the 1e-8 the reference
     // implementations assume.
     let mut optim = AdamConfig::new()
@@ -285,7 +354,8 @@ fn main() {
                 .iter()
                 .flat_map(|&(s, _, t)| [(s, t), (t, s)])
                 .collect();
-            let (heads, tails, etypes) = train_g.edge_tensors::<TB>(&device, Some(&drop));
+            let (heads, tails, etypes, tails_host) =
+                train_g.edge_tensors::<TB>(&device, Some(&drop));
             let sources: Vec<usize> = batch.iter().map(|q| q.0).collect();
             let rels_q: Vec<usize> = batch.iter().map(|q| q.1).collect();
             let states = model.propagate(
@@ -295,6 +365,7 @@ fn main() {
                 heads,
                 tails,
                 etypes,
+                &tails_host,
                 &device,
             );
             // Candidates: positive tail + uniform negatives.
@@ -373,7 +444,7 @@ fn main() {
 
     // Inductive evaluation on the disjoint graph: same relations, new
     // entities; the model transfers because nothing entity-wise was learned.
-    let (heads_e, tails_e, etypes_e) = ind_g.edge_tensors::<TB>(&device, None);
+    let (heads_e, tails_e, etypes_e, tails_host_e) = ind_g.edge_tensors::<TB>(&device, None);
     let known_ind = ind_g.known_tails_full();
     let mut test_queries: Vec<(usize, usize, usize)> = Vec::new();
     for &(h, r, t) in &ind_g.test {
@@ -383,7 +454,7 @@ fn main() {
     let out = evaluate(
         &best_model,
         n_ind_ent,
-        &(heads_e, tails_e, etypes_e),
+        &(heads_e, tails_e, etypes_e, tails_host_e),
         &test_queries,
         &known_ind,
     );
@@ -403,7 +474,13 @@ fn main() {
     );
 }
 
-type EdgeTensors = (Tensor<TB, 1, Int>, Tensor<TB, 1, Int>, Tensor<TB, 1, Int>);
+type EdgeTensorsOf<B> = (
+    Tensor<B, 1, Int>,
+    Tensor<B, 1, Int>,
+    Tensor<B, 1, Int>,
+    Vec<usize>, // host-side tails, for segment argmax and degrees
+);
+type EdgeTensors = EdgeTensorsOf<TB>;
 
 struct EvalOut {
     mrr: f64,
@@ -423,7 +500,7 @@ fn evaluate(
     queries: &[(usize, usize, usize)],
     known: &HashMap<(usize, usize), HashSet<usize>>,
 ) -> EvalOut {
-    let (heads, tails, etypes) = edges;
+    let (heads, tails, etypes, tails_host) = edges;
     let device = heads.device();
     let (mut hits50, mut hits_full, mut mrr) = (0.0f64, 0.0f64, 0.0f64);
     let mut ranks: Vec<usize> = Vec::new();
@@ -438,6 +515,7 @@ fn evaluate(
             heads.clone(),
             tails.clone(),
             etypes.clone(),
+            tails_host,
             &device,
         );
         // Full ranking: score everything, filter known tails.
@@ -507,7 +585,7 @@ impl Graph {
         &self,
         device: &B::Device,
         drop: Option<&HashSet<(usize, usize)>>,
-    ) -> (Tensor<B, 1, Int>, Tensor<B, 1, Int>, Tensor<B, 1, Int>) {
+    ) -> EdgeTensorsOf<B> {
         let mut h = Vec::new();
         let mut t = Vec::new();
         let mut ty = Vec::new();
@@ -523,10 +601,12 @@ impl Graph {
             push(b, r + self.n_rel, a);
         }
         let e = h.len();
+        let tails_host: Vec<usize> = t.iter().map(|&x| x as usize).collect();
         (
             Tensor::from_data(TensorData::new(h, [e]), device),
             Tensor::from_data(TensorData::new(t, [e]), device),
             Tensor::from_data(TensorData::new(ty, [e]), device),
+            tails_host,
         )
     }
 
