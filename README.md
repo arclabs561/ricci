@@ -11,7 +11,7 @@ Graph neural network layers, plus Ollivier-Ricci edge curvature
 
 ```toml
 [dependencies]
-ricci = "0.8"
+ricci = "0.9"
 burn = { version = "0.20", default-features = false, features = ["std"] }
 burn-ndarray = "0.20"
 ```

@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.9.0] - 2026-07-05
+
+### Added
+
+- `NBFConv::forward_edges`: edge-list form of conditional message passing
+  (gather heads, scale by per-edge type representations, scatter-add into
+  tails), batched over queries with shared or per-query relation
+  representations. The dense per-type-adjacency forward costs
+  `O(types * N^2)` memory; the edge-list form makes real relation counts
+  (hundreds) feasible. Parity test pins it to the dense path.
+- `examples/inductive_link_prediction`: NBFNet-shaped inductive link
+  prediction on the GraIL FB15k-237 v1 split, trained on one graph and
+  evaluated on a disjoint entity vocabulary, with honest numbers against
+  the published references and provenance for every protocol choice.
+
 ## [0.8.0] - 2026-07-05
 
 ### Added
