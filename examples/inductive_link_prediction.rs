@@ -44,7 +44,7 @@ use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::Backend;
 use burn::tensor::{activation, Int, Tensor, TensorData};
 use burn_ndarray::NdArray;
-use ricci::scatter::{scatter_max, scatter_min};
+use ricci::scatter::scatter_max_min;
 use ricci::NBFConv;
 
 type TB = Autodiff<NdArray<f32>>;
@@ -56,7 +56,7 @@ type TB = Autodiff<NdArray<f32>>;
 // steps — validation-based selection (below) is what bounds the budget.
 const DIM: usize = 32;
 const LAYERS: usize = 6;
-const EPOCHS: usize = 20;
+const EPOCHS: usize = 20; // override with EPOCHS=n (PNA mode is ~15x costlier per epoch on CPU)
 const BATCH: usize = 32;
 const NEGATIVES: usize = 32;
 const LR: f64 = 5e-3;
@@ -74,9 +74,11 @@ struct NbfNet<B: Backend> {
     // linear is the sum of two linears on the parts, so adding this
     // self-state path to forward_edges' output is exactly equivalent.
     self_lin: Vec<Linear<B>>,
-    // PNA mode (AGG=pna): 4 statistics x 3 degree scalers -> 12d features
-    // per node, combined by this linear instead of NBFConv's update.
-    stats_lin: Vec<Linear<B>>,
+    // PNA mode (AGG=pna): 4 statistics x 3 degree scalers. The reference
+    // applies one Linear to the 12d scaled features; algebraically that is
+    // three 4d->d linears whose outputs are scaled per node, which avoids
+    // materializing the [Q, N, 4d, 3] product (the profiled hot spot).
+    stats_lin: Vec<[Linear<B>; 3]>,
     norms: Vec<LayerNorm<B>>, // sum aggregation over hub nodes explodes without per-layer normalization
     head1: Linear<B>,
     head2: Linear<B>,
@@ -106,7 +108,17 @@ fn init_model<B: Backend>(n_rel2: usize, pna: bool, device: &B::Device) -> NbfNe
             .map(|_| LinearConfig::new(DIM, DIM).with_bias(false).init(device))
             .collect(),
         stats_lin: (0..LAYERS)
-            .map(|_| LinearConfig::new(12 * DIM, DIM).init(device))
+            .map(|_| {
+                [
+                    LinearConfig::new(4 * DIM, DIM).init(device),
+                    LinearConfig::new(4 * DIM, DIM)
+                        .with_bias(false)
+                        .init(device),
+                    LinearConfig::new(4 * DIM, DIM)
+                        .with_bias(false)
+                        .init(device),
+                ]
+            })
             .collect(),
         norms: (0..LAYERS)
             .map(|_| LayerNormConfig::new(DIM).init(device))
@@ -153,27 +165,23 @@ impl<B: Backend> NbfNet<B> {
         let h0 = mask * rq_flat.clone().reshape([q, 1, DIM]);
         // Degree scalers for PNA (recomputed per call: edge drops change
         // degrees). degree_out + 1 counts the boundary as one message.
-        let (degp1, scales) = if self.pna.0 {
+        let (degp1, scale_t, inv_scale_t) = if self.pna.0 {
             let mut deg = vec![1.0f32; n];
             for &t in tails_host {
                 deg[t] += 1.0;
             }
             let logd: Vec<f32> = deg.iter().map(|d| d.ln()).collect();
             let smean = (logd.iter().sum::<f32>() / n as f32).max(1e-6);
-            let mut sc = Vec::with_capacity(n * 3);
-            for &l in &logd {
-                let s = l / smean;
-                sc.extend_from_slice(&[1.0, s, 1.0 / s.max(0.01)]);
-            }
+            let sc: Vec<f32> = logd.iter().map(|&l| l / smean).collect();
+            let inv: Vec<f32> = sc.iter().map(|&s| 1.0 / s.max(0.01)).collect();
             (
                 Tensor::<B, 3>::from_data(TensorData::new(deg, [1, n, 1]), device),
-                Tensor::<B, 4>::from_data(TensorData::new(sc, [1, n, 1, 3]), device),
+                Tensor::<B, 3>::from_data(TensorData::new(sc, [1, n, 1]), device),
+                Tensor::<B, 3>::from_data(TensorData::new(inv, [1, n, 1]), device),
             )
         } else {
-            (
-                Tensor::zeros([1, 1, 1], device),
-                Tensor::zeros([1, 1, 1, 1], device),
-            )
+            let z = || Tensor::<B, 3>::zeros([1, 1, 1], device);
+            (z(), z(), z())
         };
         let mut h = h0.clone();
         for ((((layer, norm), proj), selfl), statsl) in self
@@ -209,14 +217,16 @@ impl<B: Backend> NbfNet<B> {
                 );
                 let mean = (sums + h0.clone()) / degp1.clone();
                 let sq_mean = (sq_sums + h0.clone().powf_scalar(2.0)) / degp1.clone();
-                let mx = scatter_max(msgs.clone(), tails_host, n, 0.0).max_pair(h0.clone());
-                let mn = scatter_min(msgs, tails_host, n, 0.0).min_pair(h0.clone());
+                let (mx, mn) = scatter_max_min(msgs, tails_host, n);
+                let mx = mx.max_pair(h0.clone());
+                let mn = mn.min_pair(h0.clone());
                 let std = (sq_mean - mean.clone().powf_scalar(2.0))
                     .clamp_min(1e-6)
                     .sqrt();
-                let feats = Tensor::cat(vec![mean, mx, mn, std], 2).reshape([q, n, 4 * DIM, 1]);
-                let pna = (feats * scales.clone()).reshape([q, n, 12 * DIM]);
-                statsl.forward(pna)
+                let feats = Tensor::cat(vec![mean, mx, mn, std], 2);
+                statsl[0].forward(feats.clone())
+                    + statsl[1].forward(feats.clone()) * scale_t.clone()
+                    + statsl[2].forward(feats) * inv_scale_t.clone()
             } else {
                 layer.forward_edges(
                     h.clone(),
@@ -293,7 +303,14 @@ fn main() {
 
     let device = <TB as Backend>::Device::default();
     let pna = std::env::var("AGG").is_ok_and(|v| v == "pna");
-    eprintln!("aggregation: {}", if pna { "pna" } else { "sum" });
+    let epochs = std::env::var("EPOCHS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(EPOCHS);
+    eprintln!(
+        "aggregation: {}  epochs: {epochs}",
+        if pna { "pna" } else { "sum" }
+    );
     let mut model = init_model::<TB>(n_rel2, pna, &device);
     // Burn's Adam epsilon defaults to 1e-5; match the 1e-8 the reference
     // implementations assume.
@@ -330,7 +347,7 @@ fn main() {
     let mut best_epoch = 0usize;
     let mut best_model = model.clone();
 
-    for epoch in 0..EPOCHS {
+    for epoch in 0..epochs {
         let mut order: Vec<usize> = (0..queries.len()).collect();
         // Deterministic shuffle (LCG) keeps runs reproducible.
         let mut state = 0x2545f491_u64.wrapping_add(epoch as u64);

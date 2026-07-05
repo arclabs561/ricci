@@ -56,6 +56,52 @@ pub fn scatter_max<B: Backend>(
     gathered * mask.clone() + (mask * (-1.0) + 1.0) * fill
 }
 
+/// Segment maximum AND minimum in one pass: one value snapshot, one host
+/// argmax/argmin sweep, two differentiable gathers. Empty segments come
+/// back as `0.0` in both outputs (the boundary term callers fold in next
+/// makes that the conventional choice). Prefer this over separate
+/// [`scatter_max`] + [`scatter_min`] calls in hot loops: the snapshot of
+/// `values` is the dominant cost and here it is paid once.
+pub fn scatter_max_min<B: Backend>(
+    values: Tensor<B, 3>,
+    segments: &[usize],
+    num_segments: usize,
+) -> (Tensor<B, 3>, Tensor<B, 3>) {
+    let [q, e, d] = values.dims();
+    assert_eq!(e, segments.len(), "one segment id per edge");
+    let host: Vec<f32> = values.clone().into_data().to_vec().unwrap();
+    let mut arg_max = vec![-1i64; q * num_segments * d];
+    let mut arg_min = vec![-1i64; q * num_segments * d];
+    for b in 0..q {
+        for (edge, &n) in segments.iter().enumerate() {
+            debug_assert!(n < num_segments);
+            let row = (b * e + edge) * d;
+            let slot0 = (b * num_segments + n) * d;
+            for k in 0..d {
+                let v = host[row + k];
+                let slot = slot0 + k;
+                if arg_max[slot] < 0 || v > host[(b * e + arg_max[slot] as usize) * d + k] {
+                    arg_max[slot] = edge as i64;
+                }
+                if arg_min[slot] < 0 || v < host[(b * e + arg_min[slot] as usize) * d + k] {
+                    arg_min[slot] = edge as i64;
+                }
+            }
+        }
+    }
+    let device = values.device();
+    let pick = |arg: Vec<i64>| {
+        let mask: Vec<f32> = arg.iter().map(|&a| if a < 0 { 0.0 } else { 1.0 }).collect();
+        let idx: Vec<i64> = arg.into_iter().map(|a| a.max(0)).collect();
+        let idx =
+            Tensor::<B, 1, Int>::from_data(TensorData::new(idx, [q * num_segments * d]), &device)
+                .reshape([q, num_segments, d]);
+        let mask = Tensor::<B, 3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device);
+        values.clone().gather(1, idx) * mask
+    };
+    (pick(arg_max), pick(arg_min))
+}
+
 /// Segment minimum over an edge list: `-scatter_max(-values)`, with the
 /// same fill and gradient-routing semantics.
 pub fn scatter_min<B: Backend>(
@@ -114,6 +160,30 @@ mod tests {
         let out = scatter_min(vals, &segs, 3, 9.0);
         let v: Vec<f32> = out.into_data().to_vec().unwrap();
         assert_eq!(v, vec![-2.0, 4.0, 3.0, 0.0, 9.0, 9.0]);
+    }
+
+    /// The fused pass agrees with the two separate calls (fill 0).
+    #[test]
+    fn fused_matches_separate() {
+        let segs = [0usize, 1, 0, 1];
+        let vals = t3(
+            vec![
+                1.0, -2.0, 5.0, 0.5, 3.0, -7.0, 4.0, 0.25, -1.0, 2.0, -5.0, -0.5, -3.0, 7.0, -4.0,
+                -0.25,
+            ],
+            [2, 4, 2],
+        );
+        let (mx, mn) = scatter_max_min(vals.clone(), &segs, 3);
+        let mx_ref = scatter_max(vals.clone(), &segs, 3, 0.0);
+        let mn_ref = scatter_min(vals, &segs, 3, 0.0);
+        assert_eq!(
+            mx.into_data().to_vec::<f32>().unwrap(),
+            mx_ref.into_data().to_vec::<f32>().unwrap()
+        );
+        assert_eq!(
+            mn.into_data().to_vec::<f32>().unwrap(),
+            mn_ref.into_data().to_vec::<f32>().unwrap()
+        );
     }
 
     /// The backward routes gradient ONLY to each segment's winning
