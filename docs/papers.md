@@ -135,7 +135,10 @@ complex logical queries.
 ricci takes: `NBFConv` is one iteration of the neuralized Bellman-Ford
 update, with edge-type representations as forward-time inputs and the
 boundary condition re-added each layer. The semiring instances the paper
-generalizes are the same algebra family heyting evaluates exactly.
+generalizes are the same algebra family heyting evaluates exactly. The
+`inductive_link_prediction` example trains an NBFNet-shaped model on the
+GraIL FB15k-237 v1 inductive split end to end (see examples/README.md for
+the honest numbers vs the paper's PNA-equipped 0.834).
 
 ### Towards foundation models for knowledge graph reasoning (Galkin, Yuan, Mostafa, Tang, Zhu, ICLR 2024)
 
