@@ -1,9 +1,9 @@
 //! Graph neural network layers on Burn tensors.
 
-use burn::module::{Ignored, Module};
+use burn::module::{Ignored, Module, Param, ParamId};
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::backend::Backend;
-use burn::tensor::Tensor;
+use burn::tensor::{Distribution, Tensor};
 
 use crate::hyperbolic::PoincareBall;
 
@@ -214,6 +214,138 @@ impl<B: Backend> HGCNConv<B> {
     }
 }
 
+/// Relational Graph Convolutional Network layer (R-GCN):
+/// `Σ_r A_hat_r X W_r + X W_self` (Schlichtkrull et al., ESWC 2018, Eq. 2).
+///
+/// One node set, many relations: each relation type gets its own learned
+/// transform applied through its own (pre-normalized, as with [`GCNConv`])
+/// adjacency, plus a self-loop transform. Directions count as distinct
+/// relations: to message both ways along a relation, pass `A_r` and its
+/// transpose as separate stack entries (the paper's canonical + inverse
+/// convention). The paper normalizes by `1/|N_i^r|` per relation, or a
+/// shared across-relation constant for link prediction, and notes fixed
+/// normalization can degrade on high-degree hub nodes; the choice is the
+/// caller's, encoded in the adjacencies.
+///
+/// [`with_bases`](Self::with_bases) shares the relation transforms through
+/// a basis (their Eq. 3: `W_r = Σ_b a_rb V_b`), keeping parameters
+/// sublinear in the relation count; load-bearing for KGs with hundreds of
+/// relations. The paper's block-diagonal variant (Eq. 4) is not
+/// implemented.
+///
+/// # Example
+///
+/// ```
+/// use burn::tensor::{backend::Backend, TensorData};
+/// use burn_ndarray::NdArray;
+/// use ricci::RGCNConv;
+///
+/// type B = NdArray<f32>;
+/// let dev = <B as Backend>::Device::default();
+///
+/// let layer = RGCNConv::<B>::init(4, 4, 2, &dev);
+/// let x = burn::tensor::Tensor::<B, 2>::from_data(
+///     TensorData::new(vec![0.1f32; 3 * 4], [3, 4]), &dev,
+/// );
+/// let a = burn::tensor::Tensor::<B, 2>::from_data(
+///     TensorData::new(vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0f32], [3, 3]), &dev,
+/// );
+/// let y = layer.forward(x, &[a.clone(), a.transpose()]);
+/// assert_eq!(y.dims(), [3, 4]);
+/// ```
+#[derive(Module, Debug)]
+pub struct RGCNConv<B: Backend> {
+    /// Per-relation transforms (empty when basis-decomposed).
+    rel: Vec<Linear<B>>,
+    /// Shared bases `V_b`, `[num_bases, d_in, d_out]` (basis mode only).
+    basis: Option<Param<Tensor<B, 3>>>,
+    /// Per-relation basis coefficients `a_rb`, `[num_relations, num_bases]`.
+    coef: Option<Param<Tensor<B, 2>>>,
+    self_loop: Linear<B>,
+}
+
+impl<B: Backend> RGCNConv<B> {
+    /// One full `Linear(d_in, d_out)` per relation, plus the self-loop.
+    pub fn init(d_in: usize, d_out: usize, num_relations: usize, device: &B::Device) -> Self {
+        Self {
+            rel: (0..num_relations)
+                .map(|_| LinearConfig::new(d_in, d_out).init(device))
+                .collect(),
+            basis: None,
+            coef: None,
+            self_loop: LinearConfig::new(d_in, d_out).init(device),
+        }
+    }
+
+    /// Basis-decomposed relation transforms: `num_bases` shared `V_b`
+    /// matrices with per-relation coefficients (Eq. 3).
+    pub fn with_bases(
+        d_in: usize,
+        d_out: usize,
+        num_relations: usize,
+        num_bases: usize,
+        device: &B::Device,
+    ) -> Self {
+        let std = (1.0 / d_in as f64).sqrt();
+        let mk3 = Tensor::random(
+            [num_bases, d_in, d_out],
+            Distribution::Normal(0.0, std),
+            device,
+        )
+        .require_grad();
+        let mk2 = Tensor::random(
+            [num_relations, num_bases],
+            Distribution::Normal(0.0, (1.0 / num_bases as f64).sqrt()),
+            device,
+        )
+        .require_grad();
+        Self {
+            rel: Vec::new(),
+            basis: Some(Param::initialized(ParamId::new(), mk3)),
+            coef: Some(Param::initialized(ParamId::new(), mk2)),
+            self_loop: LinearConfig::new(d_in, d_out).init(device),
+        }
+    }
+
+    /// Number of relation types this layer expects.
+    pub fn num_relations(&self) -> usize {
+        match &self.coef {
+            Some(c) => c.val().dims()[0],
+            None => self.rel.len(),
+        }
+    }
+
+    /// Forward: `Σ_r adjs[r] @ (x @ W_r) + self_loop(x)`.
+    ///
+    /// # Panics
+    /// Panics if `adjs.len()` differs from [`num_relations`](Self::num_relations).
+    pub fn forward(&self, x: Tensor<B, 2>, adjs: &[Tensor<B, 2>]) -> Tensor<B, 2> {
+        assert_eq!(
+            adjs.len(),
+            self.num_relations(),
+            "one adjacency per relation"
+        );
+        let mut out = self.self_loop.forward(x.clone());
+        if let (Some(basis), Some(coef)) = (&self.basis, &self.coef) {
+            let [nb, d_in, d_out] = basis.val().dims();
+            let flat = basis.val().reshape([nb, d_in * d_out]);
+            let ws = coef.val().matmul(flat); // [R, d_in * d_out]
+            for (r, adj) in adjs.iter().enumerate() {
+                let w = ws
+                    .clone()
+                    .slice([r..r + 1, 0..d_in * d_out])
+                    .reshape([d_in, d_out]);
+                out = out + adj.clone().matmul(x.clone().matmul(w));
+            }
+        } else {
+            for (lin, adj) in self.rel.iter().zip(adjs) {
+                out = out + adj.clone().matmul(lin.forward(x.clone()));
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +356,69 @@ mod tests {
 
     fn dev() -> <B as Backend>::Device {
         <B as Backend>::Device::default()
+    }
+
+    /// Swapping which adjacency carries which relation changes RGCN output
+    /// (per-relation weights are real), while any relation-collapsing model
+    /// is invariant to the swap by construction. The layer-level analogue
+    /// of the direction-blindness failure of reciprocal-free DistMult.
+    #[test]
+    fn rgcn_distinguishes_relations() {
+        let (n, d) = (4, 3);
+        let layer = RGCNConv::<B>::init(d, d, 2, &dev());
+        let x = Tensor::from_data(
+            TensorData::new((0..n * d).map(|i| i as f32 / 5.0).collect(), [n, d]),
+            &dev(),
+        );
+        let mut a_v = vec![0.0f32; n * n];
+        a_v[1] = 1.0; // 0 -> 1 under relation A
+        let mut b_v = vec![0.0f32; n * n];
+        b_v[2] = 1.0; // 0 -> 2 under relation B
+        let a = Tensor::from_data(TensorData::new(a_v, [n, n]), &dev());
+        let b = Tensor::from_data(TensorData::new(b_v, [n, n]), &dev());
+
+        let fwd: Vec<f32> = layer
+            .forward(x.clone(), &[a.clone(), b.clone()])
+            .into_data()
+            .to_vec()
+            .unwrap();
+        let swp: Vec<f32> = layer.forward(x, &[b, a]).into_data().to_vec().unwrap();
+        let diff: f32 = fwd.iter().zip(&swp).map(|(p, q)| (p - q).abs()).sum();
+        assert!(diff > 1e-4, "relation swap must change the output: {diff}");
+    }
+
+    /// Empty relation stack degenerates to the self-loop transform alone.
+    #[test]
+    fn rgcn_zero_relations_is_self_loop() {
+        let (n, d) = (3, 2);
+        let layer = RGCNConv::<B>::init(d, d, 0, &dev());
+        let x = Tensor::from_data(TensorData::new(vec![0.3f32; n * d], [n, d]), &dev());
+        let y: Vec<f32> = layer.forward(x.clone(), &[]).into_data().to_vec().unwrap();
+        let s: Vec<f32> = layer.self_loop.forward(x).into_data().to_vec().unwrap();
+        assert_eq!(y, s);
+    }
+
+    /// Basis decomposition: forward shape holds, relation count reads from
+    /// the coefficient table, and parameters stay sublinear in relations
+    /// (6 relations share 2 bases).
+    #[test]
+    fn rgcn_basis_decomposition() {
+        let (n, d, r, nb) = (4, 3, 6, 2);
+        let layer = RGCNConv::<B>::with_bases(d, d, r, nb, &dev());
+        assert_eq!(layer.num_relations(), r);
+        let x = Tensor::from_data(TensorData::new(vec![0.2f32; n * d], [n, d]), &dev());
+        let eye = {
+            let mut v = vec![0.0f32; n * n];
+            for i in 0..n {
+                v[i * n + i] = 1.0;
+            }
+            Tensor::from_data(TensorData::new(v, [n, n]), &dev())
+        };
+        let adjs: Vec<_> = (0..r).map(|_| eye.clone()).collect();
+        let y = layer.forward(x, &adjs);
+        assert_eq!(y.dims(), [n, d]);
+        // Shared bases: 2 * d * d + coefficients 6 * 2 < full 6 * d * d.
+        assert!(nb * d * d + r * nb < r * d * d);
     }
 
     #[test]

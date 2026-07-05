@@ -97,3 +97,21 @@ exactly the information tree-bounded aggregation misses.
 
 ricci takes: `features` is this recipe, with walk and closed-walk profiles
 as the feature vectors.
+
+### Modeling relational data with graph convolutional networks (Schlichtkrull et al., ESWC 2018)
+
+R-GCN: extend graph convolution to directed, labeled multigraphs by giving
+every relation type its own transform, summed with a self-loop transform
+(`Σ_r Σ_{j ∈ N_i^r} (1/c_{i,r}) W_r h_j + W_0 h_i`); relations appear in
+both canonical and inverse directions as distinct types. Because parameters
+grow linearly with relation count, two regularizations are introduced:
+basis decomposition (`W_r = Σ_b a_rb V_b`, shared bases with per-relation
+coefficients) and block-diagonal decomposition; on FB15k-237 the block
+variant won, and an R-GCN encoder under a DistMult decoder beat the
+decoder-only baseline by 29.8%. The paper flags its own weak point: fixed
+`1/c` normalization degrades on high-degree hub nodes.
+
+ricci takes: `RGCNConv` is the layer with the basis decomposition
+implemented (block-diagonal is not); adjacencies are caller-normalized as
+with `GCNConv`, and both directions of a relation enter as separate stack
+entries, per the paper's convention.

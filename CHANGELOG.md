@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `RGCNConv`: relational graph convolution (Schlichtkrull et al., ESWC
+  2018) — per-relation transforms over an adjacency stack plus a
+  self-loop, with optional basis decomposition for large relation counts.
+  The heterogeneous message-passing primitive both the relational-deep-
+  learning direction and the geometric-KGFM substrate need.
+
 All notable changes to this project are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

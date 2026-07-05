@@ -24,4 +24,4 @@ pub mod nn;
 pub use curvature::{ollivier_ricci_curvatures, CurvatureConfig, CurvatureError, EdgeCurvature};
 pub use features::hom_profile;
 pub use hyperbolic::PoincareBall;
-pub use nn::{GCNConv, HGCNConv};
+pub use nn::{GCNConv, HGCNConv, RGCNConv};

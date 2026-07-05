@@ -55,7 +55,9 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::PoincareBall`: Poincare ball geometry (project, mobius_add, exp/log maps, distance, parallel transport).
 - `ricci::GCNConv`: graph convolution (linear projection + adjacency matmul).
 - `ricci::HGCNConv`: hyperbolic graph convolution on the Poincare ball.
-  Both conv layers derive Burn's `Module`, so they embed in trainable models.
+- `ricci::RGCNConv`: relational graph convolution (per-relation transforms
+  over an adjacency stack, optional basis decomposition) for typed graphs.
+  All conv layers derive Burn's `Module`, so they embed in trainable models.
 - `ricci::curvature`: Ollivier-Ricci edge curvature over an adjacency matrix
   (lazy-walk `alpha`, entropic `W1`).
 - `ricci::features`: homomorphism-count node features (walk and closed-walk
@@ -98,6 +100,9 @@ Each entry links to a mechanism-level summary in [docs/papers.md](docs/papers.md
   graph parameters. NeurIPS 2021.
   [arXiv:2106.06707](https://arxiv.org/abs/2106.06707). Hom-count features
   in practice. [notes](docs/papers.md#graph-neural-networks-with-local-graph-parameters-barcelo-geerts-reutter-ryschkov-neurips-2021)
+- Schlichtkrull, Kipf, Bloem, van den Berg, Titov, Welling. Modeling
+  relational data with graph convolutional networks. ESWC 2018.
+  [arXiv:1703.06103](https://arxiv.org/abs/1703.06103). `RGCNConv`. [notes](docs/papers.md#modeling-relational-data-with-graph-convolutional-networks-schlichtkrull-et-al-eswc-2018)
 
 ## License
 
