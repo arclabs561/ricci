@@ -3,7 +3,7 @@
 use burn::module::{Ignored, Module, Param, ParamId};
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::backend::Backend;
-use burn::tensor::{Distribution, Tensor};
+use burn::tensor::{Distribution, IndexingUpdateOp, Int, Tensor};
 
 use crate::hyperbolic::PoincareBall;
 
@@ -395,6 +395,39 @@ impl<B: Backend> NBFConv<B> {
         reached as f32 / n.max(1) as f32
     }
 
+    /// Forward one Bellman-Ford iteration over an edge list, batched over
+    /// queries. The scalable form of [`forward`](Self::forward): dense
+    /// per-type adjacencies cost `O(types · N²)` memory, which is
+    /// infeasible past a few dozen edge types; this gathers head states,
+    /// scales by each edge's type representation, and scatter-adds into
+    /// tail states.
+    ///
+    /// `h`, `h0`: `[Q, N, d]` per-query node states and boundary
+    /// conditions. `heads`, `tails`, `etypes`: `[E]` edge list. `rel`:
+    /// `[1, T, d]` shared or `[Q, T, d]` per-query edge-type
+    /// representations.
+    pub fn forward_edges(
+        &self,
+        h: Tensor<B, 3>,
+        h0: Tensor<B, 3>,
+        heads: Tensor<B, 1, Int>,
+        tails: Tensor<B, 1, Int>,
+        etypes: Tensor<B, 1, Int>,
+        rel: Tensor<B, 3>,
+    ) -> Tensor<B, 3> {
+        let [q, n, d] = h.dims();
+        let src = h.select(1, heads); // [Q, E, d]
+        let w = rel.select(1, etypes); // [1 or Q, E, d]
+        let msgs = src * w;
+        let agg = Tensor::zeros([q, n, d], &msgs.device()).select_assign(
+            1,
+            tails,
+            msgs,
+            IndexingUpdateOp::Add,
+        );
+        self.update.forward(agg + h0)
+    }
+
     /// Forward one Bellman-Ford iteration.
     ///
     /// `h`: node states `[N, d]`. `h0`: the boundary condition `[N, d]`
@@ -628,6 +661,57 @@ mod tests {
             prev = c;
         }
         assert_eq!(prev, 1.0, "path fully reached: boundary + 3 hops");
+    }
+
+    /// The edge-list forward computes the same function as the dense
+    /// adjacency forward (Q = 1), so the scalable path is pinned to the
+    /// reference path.
+    #[test]
+    fn nbf_edges_matches_dense() {
+        let (n, d) = (4, 3);
+        let layer = NBFConv::<B>::init(d, &dev());
+        // Two edge types: 0->1, 1->2 under type 0; 2->3, 3->0 under type 1.
+        let e = [(0usize, 1usize, 0usize), (1, 2, 0), (2, 3, 1), (3, 0, 1)];
+        let mut a0 = vec![0.0f32; n * n];
+        let mut a1 = vec![0.0f32; n * n];
+        for &(u, v, t) in &e {
+            if t == 0 {
+                a0[v * n + u] = 1.0;
+            } else {
+                a1[v * n + u] = 1.0;
+            }
+        }
+        let adjs = [
+            Tensor::from_data(TensorData::new(a0, [n, n]), &dev()),
+            Tensor::from_data(TensorData::new(a1, [n, n]), &dev()),
+        ];
+        let rel2 = Tensor::from_data(
+            TensorData::new((0..2 * d).map(|i| 0.2 + i as f32 / 9.0).collect(), [2, d]),
+            &dev(),
+        );
+        let h_v: Vec<f32> = (0..n * d).map(|i| i as f32 / 11.0).collect();
+        let h2 = Tensor::from_data(TensorData::new(h_v.clone(), [n, d]), &dev());
+        let h0_v: Vec<f32> = (0..n * d).map(|i| ((i * 7) % 5) as f32 / 6.0).collect();
+        let h02 = Tensor::from_data(TensorData::new(h0_v.clone(), [n, d]), &dev());
+        let dense: Vec<f32> = layer
+            .forward(h2, h02, &adjs, rel2.clone())
+            .into_data()
+            .to_vec()
+            .unwrap();
+
+        let heads = Tensor::from_data(TensorData::new(vec![0i64, 1, 2, 3], [4]), &dev());
+        let tails = Tensor::from_data(TensorData::new(vec![1i64, 2, 3, 0], [4]), &dev());
+        let etypes = Tensor::from_data(TensorData::new(vec![0i64, 0, 1, 1], [4]), &dev());
+        let h3 = Tensor::from_data(TensorData::new(h_v, [1, n, d]), &dev());
+        let h03 = Tensor::from_data(TensorData::new(h0_v, [1, n, d]), &dev());
+        let edges: Vec<f32> = layer
+            .forward_edges(h3, h03, heads, tails, etypes, rel2.reshape([1, 2, d]))
+            .into_data()
+            .to_vec()
+            .unwrap();
+        for (a, b) in dense.iter().zip(&edges) {
+            assert!((a - b).abs() < 1e-5, "dense {a} vs edges {b}");
+        }
     }
 
     /// Two-stage composition on a toy KG: relation graph -> conditional
