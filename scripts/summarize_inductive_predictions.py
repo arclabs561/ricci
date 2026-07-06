@@ -380,6 +380,40 @@ def print_path_bucket_rows(buckets: dict[str, RelationSummary]) -> None:
         )
 
 
+def print_path_patterns(graph: Graph, ranked: list[RankedQuery]) -> None:
+    print("train-path relation patterns among failures:")
+    print_path_pattern_group(graph, ranked, "rank>10", min_rank=11)
+    print_path_pattern_group(graph, ranked, "rank>50", min_rank=51)
+
+
+def print_path_pattern_group(
+    graph: Graph, ranked: list[RankedQuery], label: str, min_rank: int
+) -> None:
+    rows = [item for item in ranked if item.rank >= min_rank]
+    patterns: Counter[tuple[str, ...]] = Counter(
+        path_pattern(graph, item.query.source, item.query.target) for item in rows
+    )
+    print(f"  {label}: {len(rows)} cases")
+    if not patterns:
+        print("    <none>")
+        return
+    for pattern, count in patterns.most_common(8):
+        print(f"    {format_pattern(pattern)}: {count}")
+
+
+def path_pattern(graph: Graph, source: str, target: str) -> tuple[str, ...]:
+    path = graph.labeled_path(source, target)
+    if path is None:
+        return ("<no-path>",)
+    if not path:
+        return ("<self>",)
+    return tuple(relation for relation, _node in path)
+
+
+def format_pattern(pattern: tuple[str, ...]) -> str:
+    return " -> ".join(pattern)
+
+
 def print_support_sweep(
     graph: Graph, queries: list[Query], baseline: list[RankedQuery]
 ) -> None:
@@ -513,12 +547,19 @@ def main() -> None:
         action="store_true",
         help="Also sweep a diagnostic relation-support prior over exported scores.",
     )
+    parser.add_argument(
+        "--path-patterns",
+        action="store_true",
+        help="Also print frequent relation-labeled train-path patterns in failures.",
+    )
     args = parser.parse_args()
 
     graph = Graph(args.data_dir)
     queries = parse_predictions(args.predictions)
     ranked = rank_queries(graph, queries)
     print_summary(graph, ranked, args.predictions, args.data_dir)
+    if args.path_patterns:
+        print_path_patterns(graph, ranked)
     if args.support_sweep:
         print_support_sweep(graph, queries, ranked)
 
