@@ -31,9 +31,12 @@
 //! this prints instructions and exits 0.
 //!
 //! Run: cargo run --release --example inductive_link_prediction
+//! Knobs: `BATCH=64`, `FAILURE_DUMP=/tmp/failures.tsv`, and
+//! `EXPORT_PREDICTIONS=/tmp/predictions.txt`.
 
-use std::collections::{HashMap, HashSet};
-use std::io::Write;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use burn::backend::Autodiff;
@@ -57,12 +60,11 @@ type TB = Autodiff<NdArray<f32>>;
 // Hyperparameters follow NBFNet's config/inductive/fb15k237.yaml (dim 32,
 // 6 layers, lr 5e-3, 32 negatives, adversarial temperature 0.5, 20
 // epochs); note our query list enumerates both directions explicitly and
-// uses batch 32, so one epoch here is about four of theirs in gradient
-// steps — validation-based selection (below) is what bounds the budget.
+// uses batch 32 by default, override with BATCH=64 for reference parity.
 const DIM: usize = 32;
 const LAYERS: usize = 6;
 const EPOCHS: usize = 20; // override with EPOCHS=n (PNA mode is ~15x costlier per epoch on CPU)
-const BATCH: usize = 32;
+const DEFAULT_BATCH: usize = 32;
 const NEGATIVES: usize = 32;
 const LR: f64 = 5e-3;
 const ADV_TEMPERATURE: f32 = 0.5;
@@ -283,12 +285,14 @@ impl<B: Backend> NbfNet<B> {
 }
 
 fn main() {
-    let Some((train_g, n_train_ent, rel_names)) = load_graph(Path::new("data/fb237_v1"), None)
+    let Some((train_g, n_train_ent, rel_names, _train_ent_names)) =
+        load_graph(Path::new("data/fb237_v1"), None)
     else {
         eprintln!("GraIL fb237_v1 data not found: run scripts/fetch_grail_fb237v1.sh");
         return; // data-gated no-op.
     };
-    let Some((ind_g, n_ind_ent, _)) = load_graph(Path::new("data/fb237_v1_ind"), Some(&rel_names))
+    let Some((ind_g, n_ind_ent, _, ind_ent_names)) =
+        load_graph(Path::new("data/fb237_v1_ind"), Some(&rel_names))
     else {
         eprintln!("fb237_v1_ind missing or has unseen relations");
         return;
@@ -312,8 +316,12 @@ fn main() {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(EPOCHS);
+    let batch_size = env_usize("BATCH").unwrap_or(DEFAULT_BATCH);
+    let failure_dump = std::env::var("FAILURE_DUMP").ok();
+    let failure_limit = env_usize("FAILURE_LIMIT").unwrap_or(64);
+    let export_predictions = std::env::var("EXPORT_PREDICTIONS").ok();
     eprintln!(
-        "aggregation: {}  epochs: {epochs}  backend: {}",
+        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}",
         if pna { "pna" } else { "sum" },
         backend_name()
     );
@@ -366,11 +374,11 @@ fn main() {
         }
         let mut total = 0.0_f32;
         let mut batches = 0u32;
-        let mut diag_h = 0.0_f32; // mean |state| on the first batch: explosion/collapse probe
+        let mut first_state_abs = 0.0_f32; // mean |state| on the first batch: explosion/collapse probe
         let mut drop_pairs_total = 0usize;
         let mut dropped_edges_total = 0usize;
-        let mut first_score_diag: Option<(f64, f64, f64)> = None;
-        for chunk in order.chunks(BATCH) {
+        let mut first_score_probe: Option<(f64, f64, f64)> = None;
+        for chunk in order.chunks(batch_size) {
             let batch: Vec<_> = chunk.iter().map(|&i| queries[i]).collect();
             // Candidates: positive tail + uniform negatives. Sample these
             // before building the message graph: reference `remove_one_hop`
@@ -421,7 +429,7 @@ fn main() {
                 &device,
             );
             if batches == 0 {
-                diag_h = states
+                first_state_abs = states
                     .clone()
                     .abs()
                     .mean()
@@ -444,7 +452,7 @@ fn main() {
                     neg_sum += row[1..].iter().map(|&x| x as f64).sum::<f64>() / NEGATIVES as f64;
                     hard_margin_sum += max_neg - pos;
                 }
-                first_score_diag = Some((
+                first_score_probe = Some((
                     pos_sum / q as f64,
                     neg_sum / q as f64,
                     hard_margin_sum / q as f64,
@@ -467,7 +475,7 @@ fn main() {
         eprint!(
             "epoch {epoch}: loss {:.4}  |h| {:.3}",
             total / batches as f32,
-            diag_h
+            first_state_abs
         );
         let drop_pairs = drop_pairs_total as f64 / batches as f64;
         let dropped_edges = dropped_edges_total as f64 / batches as f64;
@@ -475,7 +483,7 @@ fn main() {
             "  drop pairs/batch {:.1}  edges dropped {:.1}/{full_edge_count}",
             drop_pairs, dropped_edges
         );
-        if let Some((pos, neg, hard)) = first_score_diag {
+        if let Some((pos, neg, hard)) = first_score_probe {
             eprint!(
                 "  first scores pos {:.3} neg {:.3} hard-pos {:.3}",
                 pos, neg, hard
@@ -493,6 +501,8 @@ fn main() {
                 &edges_valid,
                 &valid_queries,
                 &known_full,
+                batch_size,
+                None,
             );
             eprint!("  valid MRR {:.4}", v.mrr);
             if v.mrr > best_mrr {
@@ -510,6 +520,8 @@ fn main() {
             &edges_valid,
             &valid_queries,
             &known_full,
+            batch_size,
+            None,
         );
         best_mrr = v.mrr;
         best_epoch = epochs.saturating_sub(1);
@@ -526,12 +538,15 @@ fn main() {
         test_queries.push((h, r, t));
         test_queries.push((t, r + rel_names.len(), h));
     }
+    let diagnostic = EvalDiagnosticContext::new(&ind_g, n_ind_ent, export_predictions.is_some());
     let out = evaluate(
         &best_model,
         n_ind_ent,
         &(heads_e, tails_e, etypes_e, tails_host_e),
         &test_queries,
         &known_ind,
+        batch_size,
+        Some(&diagnostic),
     );
     eprintln!(
         "full rank: mean {:.1}  median {}  p90 {}  p95 {}  p99 {}  max {} (of {} entities)",
@@ -553,6 +568,37 @@ fn main() {
         "score margin gold-best-corrupt: mean {:.3}  p10 {:.3}  median {:.3}; eval coverage {:.3}  |h| {:.3}",
         out.margin_mean, out.margin_p10, out.margin_median, out.coverage, out.state_abs
     );
+    print_relation_diagnostics(&out, &rel_names);
+    print_corrupt_diagnostics(&out, &ind_ent_names);
+    print_path_signature_diagnostics(&out);
+    if let Some(path) = failure_dump.as_deref() {
+        if let Err(err) = write_failure_dump(
+            path,
+            &out.records,
+            &rel_names,
+            &ind_ent_names,
+            failure_limit,
+        ) {
+            eprintln!("failed to write failure dump {path}: {err}");
+        } else {
+            eprintln!("wrote full-rank failure dump: {path}");
+        }
+    }
+    if let Some(path) = export_predictions.as_deref() {
+        if let Some(predictions) = out.predictions.as_ref() {
+            if let Err(err) = write_inductiveeval_predictions(
+                path,
+                &ind_g.test,
+                &rel_names,
+                &ind_ent_names,
+                predictions,
+            ) {
+                eprintln!("failed to write prediction export {path}: {err}");
+            } else {
+                eprintln!("wrote inductiveeval prediction export: {path}");
+            }
+        }
+    }
     let _ = std::io::stderr().flush();
     println!(
         "fb237_v1 -> fb237_v1_ind (both directions, n = {}):\n\
@@ -608,6 +654,40 @@ struct EvalOut {
     margin_median: f64,
     coverage: f32,
     state_abs: f32,
+    records: Vec<QueryRecord>,
+    predictions: Option<Vec<Vec<(usize, f32)>>>,
+}
+
+#[derive(Clone)]
+struct QueryRecord {
+    source: usize,
+    relation: usize,
+    target: usize,
+    rank_full: usize,
+    rank50: usize,
+    gold_score: f32,
+    best_corrupt: usize,
+    best_corrupt_score: f32,
+    margin: f64,
+    gold_distance: Option<usize>,
+    corrupt_distance: Option<usize>,
+    signature_jaccard: f64,
+}
+
+struct EvalDiagnosticContext {
+    adj: Vec<Vec<usize>>,
+    signatures: Vec<HashSet<usize>>,
+    collect_predictions: bool,
+}
+
+impl EvalDiagnosticContext {
+    fn new(graph: &Graph, n_ent: usize, collect_predictions: bool) -> Self {
+        Self {
+            adj: graph.undirected_adjacency(n_ent),
+            signatures: graph.entity_signatures(n_ent),
+            collect_predictions,
+        }
+    }
 }
 
 /// Filtered ranking over all entities plus the 50-sampled-negative
@@ -618,6 +698,8 @@ fn evaluate(
     edges: &EdgeTensors,
     queries: &[(usize, usize, usize)],
     known: &HashMap<(usize, usize), HashSet<usize>>,
+    batch_size: usize,
+    diagnostic: Option<&EvalDiagnosticContext>,
 ) -> EvalOut {
     let (heads, tails, etypes, tails_host) = edges;
     let device = heads.device();
@@ -631,7 +713,11 @@ fn evaluate(
     let mut state_abs_sum = 0.0f32;
     let mut chunks = 0u32;
     let mut rng = 0xabcdef12345_u64;
-    for chunk in queries.chunks(BATCH) {
+    let mut records = Vec::new();
+    let mut predictions = diagnostic
+        .filter(|d| d.collect_predictions)
+        .map(|_| Vec::with_capacity(queries.len()));
+    for chunk in queries.chunks(batch_size) {
         let sources: Vec<usize> = chunk.iter().map(|q| q.0).collect();
         let rels_q: Vec<usize> = chunk.iter().map(|q| q.1).collect();
         let states = model.propagate(
@@ -663,6 +749,7 @@ fn evaluate(
             let filt = known.get(&(s, r));
             let mut rank_full = 1usize;
             let mut best_corrupt = f32::NEG_INFINITY;
+            let mut best_corrupt_entity = t;
             for (e, &sc) in row.iter().enumerate() {
                 if e != t && filt.is_none_or(|set| !set.contains(&e)) {
                     if sc > gold {
@@ -670,8 +757,18 @@ fn evaluate(
                     }
                     if sc > best_corrupt {
                         best_corrupt = sc;
+                        best_corrupt_entity = e;
                     }
                 }
+            }
+            if let Some(predictions) = predictions.as_mut() {
+                let mut pred: Vec<(usize, f32)> = row
+                    .iter()
+                    .enumerate()
+                    .map(|(e, &score)| (e, score))
+                    .collect();
+                pred.sort_by(|a, b| b.1.total_cmp(&a.1));
+                predictions.push(pred);
             }
             for (slot, &k) in [1usize, 3, 10, 50].iter().enumerate() {
                 if rank_full <= k {
@@ -704,6 +801,29 @@ fn evaluate(
                 }
             }
             sample_ranks.push(rank50);
+            if let Some(diagnostic) = diagnostic {
+                let gold_distance = shortest_path_distance(&diagnostic.adj, s, t);
+                let corrupt_distance =
+                    shortest_path_distance(&diagnostic.adj, s, best_corrupt_entity);
+                let signature_jaccard = jaccard(
+                    &diagnostic.signatures[t],
+                    &diagnostic.signatures[best_corrupt_entity],
+                );
+                records.push(QueryRecord {
+                    source: s,
+                    relation: r,
+                    target: t,
+                    rank_full,
+                    rank50,
+                    gold_score: gold,
+                    best_corrupt: best_corrupt_entity,
+                    best_corrupt_score: best_corrupt,
+                    margin: (gold - best_corrupt) as f64,
+                    gold_distance,
+                    corrupt_distance,
+                    signature_jaccard,
+                });
+            }
         }
     }
     ranks.sort_unstable();
@@ -733,6 +853,8 @@ fn evaluate(
         margin_median: margins[margins.len() / 2],
         coverage: coverage_sum / chunks as f32,
         state_abs: state_abs_sum / chunks as f32,
+        records,
+        predictions,
     }
 }
 
@@ -744,6 +866,276 @@ fn batched_coverage<B: Backend>(states: &Tensor<B, 3>) -> f32 {
         .filter(|row| row.iter().any(|v| v.abs() > 1e-6))
         .count();
     reached as f32 / (q * n) as f32
+}
+
+fn print_relation_diagnostics(out: &EvalOut, rel_names: &[String]) {
+    if out.records.is_empty() {
+        return;
+    }
+    let n_rel = rel_names.len();
+    let mut stats = vec![RelationStats::default(); n_rel * 2];
+    for rec in &out.records {
+        let s = &mut stats[rec.relation];
+        s.count += 1;
+        s.mrr += 1.0 / rec.rank_full as f64;
+        s.hits10 += f64::from(rec.rank_full <= 10);
+        s.rank += rec.rank_full as f64;
+        s.margin += rec.margin;
+    }
+    let mut rows: Vec<_> = stats
+        .into_iter()
+        .enumerate()
+        .filter(|(_, s)| s.count > 0)
+        .collect();
+    rows.sort_by(|(_, a), (_, b)| {
+        let am = a.mrr / a.count as f64;
+        let bm = b.mrr / b.count as f64;
+        am.total_cmp(&bm)
+    });
+    eprintln!("worst relations by full-rank MRR:");
+    for (r, s) in rows.into_iter().take(8) {
+        let dir = if r < n_rel { "" } else { "^-1" };
+        let name = &rel_names[r % n_rel];
+        eprintln!(
+            "  {name}{dir}: n {}  MRR {:.3}  H@10 {:.3}  mean-rank {:.1}  margin {:.3}",
+            s.count,
+            s.mrr / s.count as f64,
+            s.hits10 / s.count as f64,
+            s.rank / s.count as f64,
+            s.margin / s.count as f64,
+        );
+    }
+}
+
+fn print_corrupt_diagnostics(out: &EvalOut, ent_names: &[String]) {
+    if out.records.is_empty() {
+        return;
+    }
+    let mut stats: HashMap<usize, EntityStats> = HashMap::new();
+    for rec in &out.records {
+        let s = stats.entry(rec.best_corrupt).or_default();
+        s.count += 1;
+        s.rank += rec.rank_full as f64;
+        s.margin += rec.margin;
+    }
+    let mut rows: Vec<_> = stats.into_iter().collect();
+    rows.sort_by(|(_, a), (_, b)| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.margin.total_cmp(&b.margin))
+    });
+    let n = out.records.len() as f64;
+    eprintln!("most frequent best corrupt entities:");
+    for (entity, s) in rows.into_iter().take(8) {
+        eprintln!(
+            "  {}: n {} ({:.1}%)  mean-rank {:.1}  margin {:.3}",
+            ent_name(entity, ent_names),
+            s.count,
+            100.0 * s.count as f64 / n,
+            s.rank / s.count as f64,
+            s.margin / s.count as f64,
+        );
+    }
+}
+
+fn print_path_signature_diagnostics(out: &EvalOut) {
+    if out.records.is_empty() {
+        return;
+    }
+    let mut both_dist = 0usize;
+    let mut corrupt_closer = 0usize;
+    let mut corrupt_same = 0usize;
+    let mut corrupt_farther = 0usize;
+    let mut gold_dist_sum = 0usize;
+    let mut corrupt_dist_sum = 0usize;
+    let mut signature = Vec::with_capacity(out.records.len());
+    for rec in &out.records {
+        signature.push(rec.signature_jaccard);
+        if let (Some(gold), Some(corrupt)) = (rec.gold_distance, rec.corrupt_distance) {
+            both_dist += 1;
+            gold_dist_sum += gold;
+            corrupt_dist_sum += corrupt;
+            if corrupt < gold {
+                corrupt_closer += 1;
+            } else if corrupt == gold {
+                corrupt_same += 1;
+            } else {
+                corrupt_farther += 1;
+            }
+        }
+    }
+    signature.sort_by(|a, b| a.total_cmp(b));
+    let n = out.records.len() as f64;
+    let sig_mean = signature.iter().sum::<f64>() / n;
+    let sig_p90 = signature[signature.len() * 9 / 10];
+    if both_dist == 0 {
+        eprintln!(
+            "path/signature diagnostics: no finite source-target distances; signature-jaccard mean {:.3} p90 {:.3}",
+            sig_mean, sig_p90
+        );
+        return;
+    }
+    let d = both_dist as f64;
+    eprintln!(
+        "path/signature diagnostics: gold-dist mean {:.2}  corrupt-dist mean {:.2}  corrupt closer/same/farther {:.1}%/{:.1}%/{:.1}%  signature-jaccard mean {:.3} p90 {:.3}",
+        gold_dist_sum as f64 / d,
+        corrupt_dist_sum as f64 / d,
+        100.0 * corrupt_closer as f64 / d,
+        100.0 * corrupt_same as f64 / d,
+        100.0 * corrupt_farther as f64 / d,
+        sig_mean,
+        sig_p90,
+    );
+}
+
+#[derive(Clone, Default)]
+struct RelationStats {
+    count: usize,
+    mrr: f64,
+    hits10: f64,
+    rank: f64,
+    margin: f64,
+}
+
+#[derive(Default)]
+struct EntityStats {
+    count: usize,
+    rank: f64,
+    margin: f64,
+}
+
+fn write_failure_dump(
+    path: &str,
+    records: &[QueryRecord],
+    rel_names: &[String],
+    ent_names: &[String],
+    limit: usize,
+) -> std::io::Result<()> {
+    let mut rows = records.to_vec();
+    rows.sort_by(|a, b| {
+        b.rank_full
+            .cmp(&a.rank_full)
+            .then_with(|| a.margin.total_cmp(&b.margin))
+    });
+    let file = File::create(path)?;
+    let mut w = BufWriter::new(file);
+    writeln!(
+        w,
+        "rank_full\trank50\trelation\tsource\ttarget\tgold_score\tbest_corrupt\tbest_corrupt_score\tmargin\tgold_dist\tcorrupt_dist\tsignature_jaccard"
+    )?;
+    for rec in rows.into_iter().take(limit) {
+        let rel = relation_name(rec.relation, rel_names);
+        writeln!(
+            w,
+            "{}\t{}\t{}\t{}\t{}\t{:.6}\t{}\t{:.6}\t{:.6}\t{}\t{}\t{:.3}",
+            rec.rank_full,
+            rec.rank50,
+            rel,
+            ent_name(rec.source, ent_names),
+            ent_name(rec.target, ent_names),
+            rec.gold_score,
+            ent_name(rec.best_corrupt, ent_names),
+            rec.best_corrupt_score,
+            rec.margin,
+            opt_usize(rec.gold_distance),
+            opt_usize(rec.corrupt_distance),
+            rec.signature_jaccard,
+        )?;
+    }
+    Ok(())
+}
+
+fn write_inductiveeval_predictions(
+    path: &str,
+    test: &[(usize, usize, usize)],
+    rel_names: &[String],
+    ent_names: &[String],
+    predictions: &[Vec<(usize, f32)>],
+) -> std::io::Result<()> {
+    let file = File::create(path)?;
+    let mut w = BufWriter::new(file);
+    for (i, &(h, r, t)) in test.iter().enumerate() {
+        let tail_pred = &predictions[2 * i];
+        let head_pred = &predictions[2 * i + 1];
+        writeln!(
+            w,
+            "{} {} {}",
+            ent_name(h, ent_names),
+            rel_names[r],
+            ent_name(t, ent_names)
+        )?;
+        write_predictions_line(&mut w, "Heads", head_pred, ent_names)?;
+        write_predictions_line(&mut w, "Tails", tail_pred, ent_names)?;
+    }
+    Ok(())
+}
+
+fn write_predictions_line(
+    w: &mut BufWriter<File>,
+    label: &str,
+    predictions: &[(usize, f32)],
+    ent_names: &[String],
+) -> std::io::Result<()> {
+    write!(w, "{label}:")?;
+    for &(entity, score) in predictions {
+        write!(w, "\t{}\t{score:.6}", ent_name(entity, ent_names))?;
+    }
+    writeln!(w)
+}
+
+fn shortest_path_distance(adj: &[Vec<usize>], source: usize, target: usize) -> Option<usize> {
+    if source == target {
+        return Some(0);
+    }
+    let mut dist = vec![usize::MAX; adj.len()];
+    let mut queue = VecDeque::new();
+    dist[source] = 0;
+    queue.push_back(source);
+    while let Some(node) = queue.pop_front() {
+        let next_dist = dist[node] + 1;
+        for &next in &adj[node] {
+            if dist[next] == usize::MAX {
+                if next == target {
+                    return Some(next_dist);
+                }
+                dist[next] = next_dist;
+                queue.push_back(next);
+            }
+        }
+    }
+    None
+}
+
+fn jaccard(a: &HashSet<usize>, b: &HashSet<usize>) -> f64 {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0.0;
+    }
+    a.intersection(b).count() as f64 / union as f64
+}
+
+fn relation_name(relation: usize, rel_names: &[String]) -> String {
+    let n = rel_names.len();
+    if relation < n {
+        rel_names[relation].clone()
+    } else {
+        format!("{}^-1", rel_names[relation - n])
+    }
+}
+
+fn ent_name(entity: usize, ent_names: &[String]) -> &str {
+    ent_names
+        .get(entity)
+        .map(String::as_str)
+        .unwrap_or("<unknown>")
+}
+
+fn opt_usize(value: Option<usize>) -> String {
+    value.map_or_else(|| "NA".to_string(), |v| v.to_string())
+}
+
+fn env_usize(name: &str) -> Option<usize> {
+    std::env::var(name).ok()?.parse().ok()
 }
 
 struct Graph {
@@ -818,12 +1210,37 @@ impl Graph {
         }
         m
     }
+
+    fn undirected_adjacency(&self, n_ent: usize) -> Vec<Vec<usize>> {
+        let mut adj = vec![Vec::new(); n_ent];
+        for &(a, _, b) in &self.train {
+            adj[a].push(b);
+            adj[b].push(a);
+        }
+        for row in &mut adj {
+            row.sort_unstable();
+            row.dedup();
+        }
+        adj
+    }
+
+    fn entity_signatures(&self, n_ent: usize) -> Vec<HashSet<usize>> {
+        let mut sig = vec![HashSet::new(); n_ent];
+        for &(a, r, b) in &self.train {
+            sig[a].insert(r);
+            sig[b].insert(r + self.n_rel);
+        }
+        sig
+    }
 }
 
 /// Load a GraIL-format directory. With `fixed_rels`, relation names must
 /// resolve in the given vocabulary (the inductive split shares relations);
 /// entities are interned fresh per graph.
-fn load_graph(dir: &Path, fixed_rels: Option<&Vec<String>>) -> Option<(Graph, usize, Vec<String>)> {
+fn load_graph(
+    dir: &Path,
+    fixed_rels: Option<&Vec<String>>,
+) -> Option<(Graph, usize, Vec<String>, Vec<String>)> {
     let mut rels: Vec<String> = fixed_rels.cloned().unwrap_or_default();
     let mut rel_id: HashMap<String, usize> = rels
         .iter()
@@ -831,14 +1248,14 @@ fn load_graph(dir: &Path, fixed_rels: Option<&Vec<String>>) -> Option<(Graph, us
         .map(|(i, r)| (r.clone(), i))
         .collect();
     let mut ents: HashMap<String, usize> = HashMap::new();
+    let mut ent_names: Vec<String> = Vec::new();
     let mut read = |name: &str| -> Option<Vec<(usize, usize, usize)>> {
         let text = std::fs::read_to_string(dir.join(name)).ok()?;
         let mut out = Vec::new();
         for line in text.lines() {
             let mut it = line.trim().split('\t');
             let (h, r, t) = (it.next()?, it.next()?, it.next()?);
-            let next = ents.len();
-            let hid = *ents.entry(h.to_string()).or_insert(next);
+            let hid = intern_entity(h, &mut ents, &mut ent_names);
             let rid = match rel_id.get(r) {
                 Some(&i) => i,
                 None if fixed_rels.is_none() => {
@@ -848,8 +1265,7 @@ fn load_graph(dir: &Path, fixed_rels: Option<&Vec<String>>) -> Option<(Graph, us
                 }
                 None => return None, // unseen relation in fixed mode
             };
-            let next = ents.len();
-            let tid = *ents.entry(t.to_string()).or_insert(next);
+            let tid = intern_entity(t, &mut ents, &mut ent_names);
             out.push((hid, rid, tid));
         }
         Some(out)
@@ -871,5 +1287,20 @@ fn load_graph(dir: &Path, fixed_rels: Option<&Vec<String>>) -> Option<(Graph, us
         },
         ents.len(),
         rels,
+        ent_names,
     ))
+}
+
+fn intern_entity(
+    name: &str,
+    ents: &mut HashMap<String, usize>,
+    ent_names: &mut Vec<String>,
+) -> usize {
+    if let Some(&id) = ents.get(name) {
+        return id;
+    }
+    let id = ent_names.len();
+    ents.insert(name.to_string(), id);
+    ent_names.push(name.to_string());
+    id
 }

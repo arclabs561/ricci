@@ -105,6 +105,13 @@ Reference-shaped PNA mode:
 AGG=pna EPOCHS=8 cargo run --release --features wgpu --example inductive_link_prediction
 ```
 
+Reference batch size plus full-rank diagnostics:
+
+```bash
+BATCH=64 FAILURE_DUMP=/tmp/ricci-failures.tsv EXPORT_PREDICTIONS=/tmp/ricci-predictions.txt \
+  AGG=pna EPOCHS=8 cargo run --release --features wgpu --example inductive_link_prediction
+```
+
 ```text
 selected epoch 7 (valid MRR 0.3296)
 full rank: mean 126.1  median 29  p90 339  p95 727  p99 1055  max 1088 (of 1093 entities)
