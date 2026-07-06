@@ -154,7 +154,8 @@ python3 scripts/summarize_inductive_predictions.py /tmp/ricci-predictions.txt
 ```
 
 Add `--support-sweep` to test a simple train-relation-support prior over the
-exported scores. This is a diagnostic, not the evaluation protocol.
+exported scores. It also reports which relations and cases move in or out of
+Hits@10. This is a diagnostic, not the evaluation protocol.
 
 ```text
 selected epoch 1 (valid MRR 0.3728)

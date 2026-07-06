@@ -29,6 +29,29 @@ class RelationSummary:
     rank_sum: int = 0
 
 
+@dataclass
+class RelationDelta:
+    count: int = 0
+    baseline_rr: float = 0.0
+    adjusted_rr: float = 0.0
+    baseline_hits10: int = 0
+    adjusted_hits10: int = 0
+    rank_delta: int = 0
+    fixed10: int = 0
+    lost10: int = 0
+
+
+@dataclass(frozen=True)
+class SweepPoint:
+    alpha: float
+    ranked: list[RankedQuery]
+    mrr: float
+    hits10: float
+    median_rank: int
+    fixed10: int
+    lost10: int
+
+
 def rank_queries(
     graph: Graph, queries: list[Query], support_alpha: float = 0.0
 ) -> list[RankedQuery]:
@@ -216,6 +239,7 @@ def print_support_sweep(
     print("  score = model_score + alpha * log1p(train relation support)")
     print("  alpha    MRR    H@10  median  fixed@10  lost@10")
     baseline_hits = [item.rank <= 10 for item in baseline]
+    points = []
     for alpha in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0]:
         ranked = rank_queries(graph, queries, support_alpha=alpha)
         ranks = sorted(item.rank for item in ranked)
@@ -226,10 +250,103 @@ def print_support_sweep(
         lost = sum(
             1 for before, after in zip(baseline_hits, hits) if before and not after
         )
+        point = SweepPoint(
+            alpha=alpha,
+            ranked=ranked,
+            mrr=mean_reciprocal_rank(ranked),
+            hits10=hits_at(ranked, 10),
+            median_rank=ranks[len(ranks) // 2],
+            fixed10=fixed,
+            lost10=lost,
+        )
+        points.append(point)
         print(
-            f"  {alpha:>4.1f}  {mean_reciprocal_rank(ranked):.4f}  "
-            f"{hits_at(ranked, 10):.4f}  {ranks[len(ranks) // 2]:>6}  "
+            f"  {alpha:>4.1f}  {point.mrr:.4f}  "
+            f"{point.hits10:.4f}  {point.median_rank:>6}  "
             f"{fixed:>8}  {lost:>7}"
+        )
+    best_mrr = max(points, key=lambda point: (point.mrr, point.hits10))
+    best_hits10 = max(points, key=lambda point: (point.hits10, point.mrr))
+    print_support_delta_details(baseline, best_mrr, "best MRR")
+    if best_hits10.alpha != best_mrr.alpha:
+        print_support_delta_details(baseline, best_hits10, "best H@10")
+
+
+def print_support_delta_details(
+    baseline: list[RankedQuery], point: SweepPoint, label: str
+) -> None:
+    print(f"relation-support prior deltas ({label}, alpha {point.alpha:.1f}):")
+    deltas: dict[str, RelationDelta] = defaultdict(RelationDelta)
+    for before, after in zip(baseline, point.ranked):
+        delta = deltas[before.query.relation]
+        delta.count += 1
+        delta.baseline_rr += 1.0 / before.rank
+        delta.adjusted_rr += 1.0 / after.rank
+        delta.baseline_hits10 += int(before.rank <= 10)
+        delta.adjusted_hits10 += int(after.rank <= 10)
+        delta.rank_delta += after.rank - before.rank
+        delta.fixed10 += int(before.rank > 10 and after.rank <= 10)
+        delta.lost10 += int(before.rank <= 10 and after.rank > 10)
+
+    def relation_row(row: tuple[str, RelationDelta]) -> tuple[int, float]:
+        _relation, delta = row
+        rr_delta = delta.adjusted_rr - delta.baseline_rr
+        return (delta.fixed10 - delta.lost10, rr_delta)
+
+    helped = sorted(deltas.items(), key=relation_row, reverse=True)
+    hurt = sorted(deltas.items(), key=relation_row)
+    print("  most helped relations:")
+    print_relation_delta_rows(helped[:6])
+    print("  most hurt relations:")
+    print_relation_delta_rows(hurt[:6])
+
+    fixed = [
+        (before, after)
+        for before, after in zip(baseline, point.ranked)
+        if before.rank > 10 and after.rank <= 10
+    ]
+    lost = [
+        (before, after)
+        for before, after in zip(baseline, point.ranked)
+        if before.rank <= 10 and after.rank > 10
+    ]
+    print("  largest fixed@10 cases:")
+    print_case_moves(
+        sorted(fixed, key=lambda pair: pair[0].rank - pair[1].rank, reverse=True)[:5]
+    )
+    print("  largest lost@10 cases:")
+    print_case_moves(
+        sorted(lost, key=lambda pair: pair[1].rank - pair[0].rank, reverse=True)[:5]
+    )
+
+
+def print_relation_delta_rows(rows: list[tuple[str, RelationDelta]]) -> None:
+    for relation, delta in rows:
+        h10_before = delta.baseline_hits10 / delta.count
+        h10_after = delta.adjusted_hits10 / delta.count
+        rr_delta = (delta.adjusted_rr - delta.baseline_rr) / delta.count
+        mean_rank_delta = delta.rank_delta / delta.count
+        print(
+            f"    {relation}: n {delta.count} "
+            f"fixed {delta.fixed10} lost {delta.lost10} "
+            f"H@10 {h10_before:.3f}->{h10_after:.3f} "
+            f"MRR_delta {rr_delta:+.4f} "
+            f"mean_rank_delta {mean_rank_delta:+.1f}"
+        )
+
+
+def print_case_moves(pairs: list[tuple[RankedQuery, RankedQuery]]) -> None:
+    if not pairs:
+        print("    <none>")
+        return
+    for before, after in pairs:
+        query = before.query
+        print(
+            f"    {query.direction} {query.raw_head} {query.raw_relation} {query.raw_tail}: "
+            f"rank {before.rank}->{after.rank} "
+            f"gold-support {before.gold_relation_support} "
+            f"best-corrupt-support {before.corrupt_relation_support}->{after.corrupt_relation_support} "
+            f"best-corrupt {before.best_corrupt}->{after.best_corrupt}"
         )
 
 
