@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,11 +29,15 @@ class RelationSummary:
     rank_sum: int = 0
 
 
-def rank_queries(graph: Graph, queries: list[Query]) -> list[RankedQuery]:
+def rank_queries(
+    graph: Graph, queries: list[Query], support_alpha: float = 0.0
+) -> list[RankedQuery]:
     ranked = []
     for query in queries:
         scores = dict(query.predictions)
-        gold_score = scores[query.target]
+        gold_score = adjusted_score(
+            graph, query.relation, query.target, scores[query.target], support_alpha
+        )
         filtered = graph.known[(query.source, query.relation)]
 
         rank = 1
@@ -42,6 +47,7 @@ def rank_queries(graph: Graph, queries: list[Query]) -> list[RankedQuery]:
         for entity, score in query.predictions:
             if entity == query.target or entity in filtered:
                 continue
+            score = adjusted_score(graph, query.relation, entity, score, support_alpha)
             candidate_count += 1
             if score > gold_score:
                 rank += 1
@@ -64,6 +70,14 @@ def rank_queries(graph: Graph, queries: list[Query]) -> list[RankedQuery]:
             )
         )
     return ranked
+
+
+def adjusted_score(
+    graph: Graph, relation: str, entity: str, score: float, support_alpha: float
+) -> float:
+    if support_alpha == 0.0:
+        return score
+    return score + support_alpha * math.log1p(graph.relation_support(relation, entity))
 
 
 def estimated_hits_at_k(
@@ -195,18 +209,53 @@ def print_relation_support_summary(ranked: list[RankedQuery]) -> None:
             print(f"    {relation}: {count}")
 
 
+def print_support_sweep(
+    graph: Graph, queries: list[Query], baseline: list[RankedQuery]
+) -> None:
+    print("relation-support prior sweep:")
+    print("  score = model_score + alpha * log1p(train relation support)")
+    print("  alpha    MRR    H@10  median  fixed@10  lost@10")
+    baseline_hits = [item.rank <= 10 for item in baseline]
+    for alpha in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5, 2.0]:
+        ranked = rank_queries(graph, queries, support_alpha=alpha)
+        ranks = sorted(item.rank for item in ranked)
+        hits = [item.rank <= 10 for item in ranked]
+        fixed = sum(
+            1 for before, after in zip(baseline_hits, hits) if not before and after
+        )
+        lost = sum(
+            1 for before, after in zip(baseline_hits, hits) if before and not after
+        )
+        print(
+            f"  {alpha:>4.1f}  {mean_reciprocal_rank(ranked):.4f}  "
+            f"{hits_at(ranked, 10):.4f}  {ranks[len(ranks) // 2]:>6}  "
+            f"{fixed:>8}  {lost:>7}"
+        )
+
+
+def mean_reciprocal_rank(ranked: list[RankedQuery]) -> float:
+    return sum(1.0 / item.rank for item in ranked) / len(ranked)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Summarize an inductive link-prediction export."
     )
     parser.add_argument("predictions", type=Path)
     parser.add_argument("--data-dir", type=Path, default=Path("data/fb237_v1_ind"))
+    parser.add_argument(
+        "--support-sweep",
+        action="store_true",
+        help="Also sweep a diagnostic relation-support prior over exported scores.",
+    )
     args = parser.parse_args()
 
     graph = Graph(args.data_dir)
     queries = parse_predictions(args.predictions)
     ranked = rank_queries(graph, queries)
     print_summary(ranked, args.predictions, args.data_dir)
+    if args.support_sweep:
+        print_support_sweep(graph, queries, ranked)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,9 @@ Summarize an exported prediction file without rerunning training:
 python3 scripts/summarize_inductive_predictions.py /tmp/ricci-predictions.txt
 ```
 
+Add `--support-sweep` to test a simple train-relation-support prior over the
+exported scores. This is a diagnostic, not the evaluation protocol.
+
 ```text
 selected epoch 1 (valid MRR 0.3728)
 full rank: mean 122.5  median 8  p90 357  p95 901  p99 1091  max 1091 (of 1093 entities)
