@@ -10,6 +10,14 @@
   winning edge values.
 - `examples/inductive_link_prediction` accepts `AGG=pna`, using the new
   scatter helpers for exact PNA aggregation.
+- `wgpu` feature: enables Burn's WGPU backend for training examples; the
+  inductive link-prediction example uses WGPU when built with
+  `--features wgpu`.
+- `examples/inductive_link_prediction` now prints diagnostic metrics for
+  protocol inspection: dropped candidate pairs and edges, first-batch score
+  margins, full-ranking recall@k / Hits@k, sampled-50 recall@k / Hits@k,
+  sampled/full rank distributions, gold-vs-best-corrupt margins, propagation
+  coverage, and mean state magnitude.
 
 ### Fixed
 

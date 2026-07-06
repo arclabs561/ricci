@@ -93,10 +93,16 @@ scripts/fetch_grail_fb237v1.sh
 cargo run --release --example inductive_link_prediction
 ```
 
+Use WGPU where available:
+
+```bash
+cargo run --release --features wgpu --example inductive_link_prediction
+```
+
 Reference-shaped PNA mode:
 
 ```bash
-AGG=pna EPOCHS=8 cargo run --release --example inductive_link_prediction
+AGG=pna EPOCHS=8 cargo run --release --features wgpu --example inductive_link_prediction
 ```
 
 Transfer genuinely happens; the example's doc comment records the full
