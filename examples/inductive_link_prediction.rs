@@ -1571,18 +1571,23 @@ fn signatures_share(signatures: &[HashSet<usize>], a: usize, b: usize) -> bool {
 
 struct EvidenceContext {
     relation_support: Vec<Vec<f32>>,
+    directed_edges: HashSet<(usize, usize, usize)>,
     adj: Vec<Vec<usize>>,
 }
 
 impl EvidenceContext {
     fn new(graph: &Graph, n_ent: usize) -> Self {
         let mut relation_support = vec![vec![0.0f32; n_ent]; graph.n_rel * 2];
+        let mut directed_edges = HashSet::with_capacity(graph.train.len() * 2);
         for &(h, r, t) in &graph.train {
             relation_support[r][t] += 1.0;
             relation_support[r + graph.n_rel][h] += 1.0;
+            directed_edges.insert((h, r, t));
+            directed_edges.insert((t, r + graph.n_rel, h));
         }
         Self {
             relation_support,
+            directed_edges,
             adj: graph.undirected_adjacency(n_ent),
         }
     }
@@ -1602,13 +1607,29 @@ impl EvidenceContext {
                 .entry(source)
                 .or_insert_with(|| bounded_distances(&self.adj, source, EVIDENCE_MAX_HOPS, drop));
             for &cand in row {
-                let support = self.relation_support[relation][cand].ln_1p();
+                let support = self.relation_support_after_drop(source, relation, cand, drop);
                 let path_strength = distances[cand].map_or(0.0, |d| 1.0 / (1.0 + d as f32));
                 out.push(support);
                 out.push(path_strength);
             }
         }
         out
+    }
+
+    fn relation_support_after_drop(
+        &self,
+        source: usize,
+        relation: usize,
+        candidate: usize,
+        drop: Option<&HashSet<(usize, usize)>>,
+    ) -> f32 {
+        let mut support = self.relation_support[relation][candidate];
+        if drop.is_some_and(|d| d.contains(&(source, candidate)))
+            && self.directed_edges.contains(&(source, relation, candidate))
+        {
+            support = (support - 1.0).max(0.0);
+        }
+        support.ln_1p()
     }
 }
 
