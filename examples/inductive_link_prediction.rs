@@ -32,7 +32,8 @@
 //!
 //! Run: cargo run --release --example inductive_link_prediction
 //! Knobs: `BATCH=64`, `FAILURE_DUMP=/tmp/failures.tsv`, and
-//! `EXPORT_PREDICTIONS=/tmp/predictions.txt`.
+//! `EXPORT_PREDICTIONS=/tmp/predictions.txt`. `SAMPLE_WEIGHT=1` enables
+//! TorchDrug's degree-based training sample weights as a parity diagnostic.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -373,9 +374,10 @@ fn main() {
     let select_transfer = std::env::var("SELECT").is_ok_and(|v| v == "transfer");
     let report_transfer =
         select_transfer || std::env::var("TRANSFER_VALID").is_ok_and(|v| v != "0");
+    let sample_weight = env_flag("SAMPLE_WEIGHT");
     let negative_mode = NegativeMode::from_env();
     eprintln!(
-        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}  negatives: {}",
+        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}  negatives: {}  sample-weight: {}",
         if pna { "pna" } else { "sum" },
         backend_name(),
         if select_transfer {
@@ -383,7 +385,8 @@ fn main() {
         } else {
             "train-valid"
         },
-        negative_mode.as_str()
+        negative_mode.as_str(),
+        if sample_weight { "on" } else { "off" }
     );
     reset_scatter_metrics();
     let mut model = init_model::<TB>(n_rel2, pna, &device);
@@ -399,6 +402,7 @@ fn main() {
         queries.push((h, r, t));
         queries.push((t, r + rel_names.len(), h));
     }
+    let query_weights = train_g.query_sample_weights(n_train_ent);
     let known = train_g.known_tails();
     let train_signatures = train_g.entity_signatures(n_train_ent);
     let signature_negative_pools = signature_negative_pools(&train_signatures);
@@ -462,8 +466,19 @@ fn main() {
         let mut dropped_edges_total = 0usize;
         let mut negative_stats = NegativeStats::default();
         let mut first_score_probe: Option<(f64, f64, f64)> = None;
+        let mut weight_sum = 0.0f64;
+        let mut weight_min = f32::INFINITY;
+        let mut weight_max = f32::NEG_INFINITY;
         for chunk in order.chunks(batch_size) {
             let batch: Vec<_> = chunk.iter().map(|&i| queries[i]).collect();
+            let batch_weights: Vec<f32> = chunk.iter().map(|&i| query_weights[i]).collect();
+            if sample_weight {
+                for &weight in &batch_weights {
+                    weight_sum += weight as f64;
+                    weight_min = weight_min.min(weight);
+                    weight_max = weight_max.max(weight);
+                }
+            }
             // Candidates: positive tail + strict negatives. Sample these
             // before building the message graph: reference `remove_one_hop`
             // removes edges between the source and every candidate, not only
@@ -537,9 +552,16 @@ fn main() {
             let pos = logits.clone().slice([0..q, 0..1]);
             let neg = logits.slice([0..q, 1..c]);
             let w = activation::softmax(neg.clone() / ADV_TEMPERATURE, 1).detach();
-            let loss_pos = activation::softplus(-pos, 1.0).mean();
-            let loss_neg = (activation::softplus(neg, 1.0) * w).sum_dim(1).mean();
-            let loss = (loss_pos + loss_neg) / 2.0;
+            let row_loss = (activation::softplus(-pos, 1.0)
+                + (activation::softplus(neg, 1.0) * w).sum_dim(1))
+                / 2.0;
+            let loss = if sample_weight {
+                let weights =
+                    Tensor::<TB, 2>::from_data(TensorData::new(batch_weights, [q, 1]), &device);
+                (row_loss * weights.clone()).sum() / weights.sum()
+            } else {
+                row_loss.mean()
+            };
             let grads = GradientsParams::from_grads(loss.backward(), &model);
             model = optim.step(LR, model, grads);
             total += loss.into_data().to_vec::<f32>().unwrap()[0];
@@ -568,6 +590,14 @@ fn main() {
                 negative_stats.signature_share_pct(),
                 negative_stats.pool_pct(),
                 negative_stats.rejects_per_negative()
+            );
+        }
+        if sample_weight {
+            eprint!(
+                "  sample weight mean {:.3} range {:.3}..{:.3}",
+                weight_sum / queries.len() as f64,
+                weight_min,
+                weight_max
             );
         }
         if pna {
@@ -1270,6 +1300,10 @@ fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse().ok()
 }
 
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| v != "0")
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NegativeMode {
     Uniform,
@@ -1414,6 +1448,24 @@ struct Graph {
 impl Graph {
     fn directed_edge_count(&self) -> usize {
         self.train.len() * 2
+    }
+
+    fn query_sample_weights(&self, n_ent: usize) -> Vec<f32> {
+        let mut degree_hr = vec![0usize; n_ent * self.n_rel];
+        let mut degree_tr = vec![0usize; n_ent * self.n_rel];
+        let offset = |entity: usize, relation: usize| entity * self.n_rel + relation;
+        for &(h, r, t) in &self.train {
+            degree_hr[offset(h, r)] += 1;
+            degree_tr[offset(t, r)] += 1;
+        }
+        let mut weights = Vec::with_capacity(self.train.len() * 2);
+        for &(h, r, t) in &self.train {
+            let product = degree_hr[offset(h, r)] * degree_tr[offset(t, r)];
+            let weight = 1.0 / (product as f32).sqrt();
+            weights.push(weight);
+            weights.push(weight);
+        }
+        weights
     }
 
     fn dropped_directed_edges(&self, drop: &HashSet<(usize, usize)>) -> usize {
