@@ -124,9 +124,9 @@ per-epoch `snapshot`, `scan`, and `gather` costs.
 Set `TRANSFER_VALID=1` to print inductive-validation MRR during training, or
 `SELECT=transfer` to select checkpoints by that diagnostic instead of the
 reference train-graph validation.
-Set `NEGATIVE_MODE=signature` to sample training negatives that share at least
-one observed relation signature with the gold entity. The default is the
-reference uniform strict-negative sampler.
+Set `NEGATIVE_MODE=signature` for a diagnostic hard-negative sampler whose
+negatives share at least one observed relation signature with the gold entity.
+The default is the reference uniform strict-negative sampler.
 
 External sampled, type-matched, and all-entity metrics:
 
