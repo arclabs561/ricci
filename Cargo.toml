@@ -15,6 +15,7 @@ categories = ["science", "algorithms"]
 [features]
 default = []
 wgpu = ["burn/wgpu"]
+metal = ["burn/metal"]
 
 [dependencies]
 burn = { version = "0.20.0", default-features = false, features = ["std"] }

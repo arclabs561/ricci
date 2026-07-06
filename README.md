@@ -39,6 +39,7 @@ assert!(d >= 0.0);
 ## Feature flags
 
 - `wgpu`: enables Burn's WGPU backend. On macOS this runs through Metal.
+- `metal`: enables Burn's WGPU backend with Metal selected explicitly.
 
 ## Geometry
 

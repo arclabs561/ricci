@@ -99,6 +99,12 @@ Use WGPU where available:
 cargo run --release --features wgpu --example inductive_link_prediction
 ```
 
+On macOS, WGPU normally uses Metal. To select Burn's Metal path explicitly:
+
+```bash
+cargo run --release --features metal --example inductive_link_prediction
+```
+
 Reference-shaped PNA mode:
 
 ```bash
@@ -111,6 +117,10 @@ Reference batch size plus full-rank diagnostics:
 BATCH=64 FAILURE_DUMP=/tmp/ricci-failures.tsv EXPORT_PREDICTIONS=/tmp/ricci-predictions.txt \
   AGG=pna EPOCHS=8 cargo run --release --features wgpu --example inductive_link_prediction
 ```
+
+In PNA mode the example also prints the exact segment max/min host fallback
+cost per epoch (`snapshot`, `scan`, and `gather`). That number should go down
+when the native scatter extension replaces the host winner pass.
 
 ```text
 selected epoch 7 (valid MRR 0.3296)

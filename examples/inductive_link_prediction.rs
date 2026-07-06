@@ -40,21 +40,21 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 
 use burn::backend::Autodiff;
-#[cfg(feature = "wgpu")]
+#[cfg(any(feature = "wgpu", feature = "metal"))]
 use burn::backend::Wgpu;
 use burn::module::Module;
 use burn::nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig};
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::Backend;
 use burn::tensor::{activation, Int, Tensor, TensorData};
-#[cfg(not(feature = "wgpu"))]
+#[cfg(not(any(feature = "wgpu", feature = "metal")))]
 use burn_ndarray::NdArray;
-use ricci::scatter::scatter_max_min;
+use ricci::scatter::{reset_scatter_metrics, scatter_max_min, scatter_metrics, ScatterMetrics};
 use ricci::NBFConv;
 
-#[cfg(feature = "wgpu")]
+#[cfg(any(feature = "wgpu", feature = "metal"))]
 type TB = Autodiff<Wgpu<f32, i32>>;
-#[cfg(not(feature = "wgpu"))]
+#[cfg(not(any(feature = "wgpu", feature = "metal")))]
 type TB = Autodiff<NdArray<f32>>;
 
 // Hyperparameters follow NBFNet's config/inductive/fb15k237.yaml (dim 32,
@@ -325,6 +325,7 @@ fn main() {
         if pna { "pna" } else { "sum" },
         backend_name()
     );
+    reset_scatter_metrics();
     let mut model = init_model::<TB>(n_rel2, pna, &device);
     // Burn's Adam epsilon defaults to 1e-5; match the 1e-8 the reference
     // implementations assume.
@@ -363,6 +364,7 @@ fn main() {
     let full_edge_count = train_g.directed_edge_count();
 
     for epoch in 0..epochs {
+        let scatter_start = scatter_metrics();
         let mut order: Vec<usize> = (0..queries.len()).collect();
         // Deterministic shuffle (LCG) keeps runs reproducible.
         let mut state = 0x2545f491_u64.wrapping_add(epoch as u64);
@@ -489,6 +491,9 @@ fn main() {
                 pos, neg, hard
             );
         }
+        if pna {
+            print_scatter_metrics(scatter_metrics().saturating_sub(scatter_start));
+        }
         // Model selection by validation MRR every 2 epochs, as in the
         // reference harness (train_and_validate: eval every num_epoch/10
         // epochs, load best checkpoint before test). Validation queries
@@ -613,14 +618,34 @@ fn main() {
 }
 
 fn backend_name() -> &'static str {
-    #[cfg(feature = "wgpu")]
+    #[cfg(feature = "metal")]
+    {
+        "wgpu-metal"
+    }
+    #[cfg(all(feature = "wgpu", not(feature = "metal")))]
     {
         "wgpu"
     }
-    #[cfg(not(feature = "wgpu"))]
+    #[cfg(not(any(feature = "wgpu", feature = "metal")))]
     {
         "ndarray"
     }
+}
+
+fn print_scatter_metrics(metrics: ScatterMetrics) {
+    if metrics.calls == 0 {
+        return;
+    }
+    let seconds = |nanos: u64| nanos as f64 / 1_000_000_000.0;
+    eprint!(
+        "  scatter host calls {} elems {:.1}M snapshot {:.2}s scan {:.2}s gather {:.2}s total {:.2}s",
+        metrics.calls,
+        metrics.elements as f64 / 1_000_000.0,
+        seconds(metrics.snapshot_nanos),
+        seconds(metrics.scan_nanos),
+        seconds(metrics.gather_nanos),
+        metrics.total_seconds()
+    );
 }
 
 type EdgeTensorsOf<B> = (

@@ -12,6 +12,87 @@
 
 use burn::tensor::backend::Backend;
 use burn::tensor::{Int, Tensor, TensorData};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
+static SCATTER_CALLS: AtomicU64 = AtomicU64::new(0);
+static SCATTER_ELEMENTS: AtomicU64 = AtomicU64::new(0);
+static SCATTER_SNAPSHOT_NANOS: AtomicU64 = AtomicU64::new(0);
+static SCATTER_SCAN_NANOS: AtomicU64 = AtomicU64::new(0);
+static SCATTER_GATHER_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// Runtime counters for the exact segment max/min host fallback.
+///
+/// `scatter_max_min` is exact and differentiable through `gather`, but today
+/// it snapshots edge messages to the host to choose max/min winners. These
+/// counters make that cost visible in examples and training harnesses.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ScatterMetrics {
+    /// Number of segment max/min helper calls.
+    pub calls: u64,
+    /// Number of `[query, edge, dim]` values inspected on the host.
+    pub elements: u64,
+    /// Nanoseconds spent copying tensor values from device to host.
+    pub snapshot_nanos: u64,
+    /// Nanoseconds spent choosing argmax/argmin edge indices on the host.
+    pub scan_nanos: u64,
+    /// Nanoseconds spent building index/mask tensors and gathering winners.
+    pub gather_nanos: u64,
+}
+
+impl ScatterMetrics {
+    /// Returns `self - earlier`, saturating at zero per field.
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        Self {
+            calls: self.calls.saturating_sub(earlier.calls),
+            elements: self.elements.saturating_sub(earlier.elements),
+            snapshot_nanos: self.snapshot_nanos.saturating_sub(earlier.snapshot_nanos),
+            scan_nanos: self.scan_nanos.saturating_sub(earlier.scan_nanos),
+            gather_nanos: self.gather_nanos.saturating_sub(earlier.gather_nanos),
+        }
+    }
+
+    /// Returns total measured seconds across snapshot, scan, and gather.
+    pub fn total_seconds(self) -> f64 {
+        nanos_to_seconds(self.snapshot_nanos + self.scan_nanos + self.gather_nanos)
+    }
+}
+
+/// Reads the process-wide scatter fallback counters.
+pub fn scatter_metrics() -> ScatterMetrics {
+    ScatterMetrics {
+        calls: SCATTER_CALLS.load(Ordering::Relaxed),
+        elements: SCATTER_ELEMENTS.load(Ordering::Relaxed),
+        snapshot_nanos: SCATTER_SNAPSHOT_NANOS.load(Ordering::Relaxed),
+        scan_nanos: SCATTER_SCAN_NANOS.load(Ordering::Relaxed),
+        gather_nanos: SCATTER_GATHER_NANOS.load(Ordering::Relaxed),
+    }
+}
+
+/// Resets the process-wide scatter fallback counters.
+pub fn reset_scatter_metrics() {
+    SCATTER_CALLS.store(0, Ordering::Relaxed);
+    SCATTER_ELEMENTS.store(0, Ordering::Relaxed);
+    SCATTER_SNAPSHOT_NANOS.store(0, Ordering::Relaxed);
+    SCATTER_SCAN_NANOS.store(0, Ordering::Relaxed);
+    SCATTER_GATHER_NANOS.store(0, Ordering::Relaxed);
+}
+
+fn record_scatter_metrics(elements: usize, snapshot: Duration, scan: Duration, gather: Duration) {
+    SCATTER_CALLS.fetch_add(1, Ordering::Relaxed);
+    SCATTER_ELEMENTS.fetch_add(elements as u64, Ordering::Relaxed);
+    SCATTER_SNAPSHOT_NANOS.fetch_add(duration_nanos(snapshot), Ordering::Relaxed);
+    SCATTER_SCAN_NANOS.fetch_add(duration_nanos(scan), Ordering::Relaxed);
+    SCATTER_GATHER_NANOS.fetch_add(duration_nanos(gather), Ordering::Relaxed);
+}
+
+fn duration_nanos(duration: Duration) -> u64 {
+    duration.as_nanos().min(u64::MAX as u128) as u64
+}
+
+fn nanos_to_seconds(nanos: u64) -> f64 {
+    nanos as f64 / 1_000_000_000.0
+}
 
 /// Segment maximum over an edge list, batched over queries.
 ///
@@ -31,7 +112,10 @@ pub fn scatter_max<B: Backend>(
 ) -> Tensor<B, 3> {
     let [q, e, d] = values.dims();
     assert_eq!(e, segments.len(), "one segment id per edge");
+    let snapshot_start = Instant::now();
     let host: Vec<f32> = values.clone().into_data().to_vec().unwrap();
+    let snapshot = snapshot_start.elapsed();
+    let scan_start = Instant::now();
     // Argmax edge per (query, segment, dim); -1 marks an empty segment.
     let mut arg = vec![-1i64; q * num_segments * d];
     for b in 0..q {
@@ -46,6 +130,8 @@ pub fn scatter_max<B: Backend>(
             }
         }
     }
+    let scan = scan_start.elapsed();
+    let gather_start = Instant::now();
     let device = values.device();
     let mask: Vec<f32> = arg.iter().map(|&a| if a < 0 { 0.0 } else { 1.0 }).collect();
     let idx: Vec<i64> = arg.into_iter().map(|a| a.max(0)).collect();
@@ -53,7 +139,9 @@ pub fn scatter_max<B: Backend>(
         .reshape([q, num_segments, d]);
     let mask = Tensor::<B, 3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device);
     let gathered = values.gather(1, idx);
-    gathered * mask.clone() + (mask * (-1.0) + 1.0) * fill
+    let out = gathered * mask.clone() + (mask * (-1.0) + 1.0) * fill;
+    record_scatter_metrics(q * e * d, snapshot, scan, gather_start.elapsed());
+    out
 }
 
 /// Segment maximum AND minimum in one pass: one value snapshot, one host
@@ -69,7 +157,10 @@ pub fn scatter_max_min<B: Backend>(
 ) -> (Tensor<B, 3>, Tensor<B, 3>) {
     let [q, e, d] = values.dims();
     assert_eq!(e, segments.len(), "one segment id per edge");
+    let snapshot_start = Instant::now();
     let host: Vec<f32> = values.clone().into_data().to_vec().unwrap();
+    let snapshot = snapshot_start.elapsed();
+    let scan_start = Instant::now();
     let mut arg_max = vec![-1i64; q * num_segments * d];
     let mut arg_min = vec![-1i64; q * num_segments * d];
     for b in 0..q {
@@ -89,6 +180,8 @@ pub fn scatter_max_min<B: Backend>(
             }
         }
     }
+    let scan = scan_start.elapsed();
+    let gather_start = Instant::now();
     let device = values.device();
     let pick = |arg: Vec<i64>| {
         let mask: Vec<f32> = arg.iter().map(|&a| if a < 0 { 0.0 } else { 1.0 }).collect();
@@ -99,7 +192,9 @@ pub fn scatter_max_min<B: Backend>(
         let mask = Tensor::<B, 3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device);
         values.clone().gather(1, idx) * mask
     };
-    (pick(arg_max), pick(arg_min))
+    let out = (pick(arg_max), pick(arg_min));
+    record_scatter_metrics(q * e * d, snapshot, scan, gather_start.elapsed());
+    out
 }
 
 /// Segment minimum over an edge list: `-scatter_max(-values)`, with the
