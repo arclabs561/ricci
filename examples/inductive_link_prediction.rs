@@ -369,10 +369,18 @@ fn main() {
     let failure_dump = std::env::var("FAILURE_DUMP").ok();
     let failure_limit = env_usize("FAILURE_LIMIT").unwrap_or(64);
     let export_predictions = std::env::var("EXPORT_PREDICTIONS").ok();
+    let select_transfer = std::env::var("SELECT").is_ok_and(|v| v == "transfer");
+    let report_transfer =
+        select_transfer || std::env::var("TRANSFER_VALID").is_ok_and(|v| v != "0");
     eprintln!(
-        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}",
+        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}",
         if pna { "pna" } else { "sum" },
-        backend_name()
+        backend_name(),
+        if select_transfer {
+            "transfer-valid"
+        } else {
+            "train-valid"
+        }
     );
     reset_scatter_metrics();
     let mut model = init_model::<TB>(n_rel2, pna, &device);
@@ -407,6 +415,19 @@ fn main() {
     valid_queries.truncate(256);
     let edges_valid = train_g.edge_tensors::<TB>(&device, None);
     let known_full = train_g.known_tails_full();
+    let mut transfer_valid_queries: Vec<(usize, usize, usize)> = Vec::new();
+    if report_transfer {
+        for &(h, r, t) in &ind_g.valid {
+            transfer_valid_queries.push((h, r, t));
+            transfer_valid_queries.push((t, r + rel_names.len(), h));
+        }
+    }
+    let edges_transfer_valid = if report_transfer {
+        Some(ind_g.edge_tensors::<TB>(&device, None))
+    } else {
+        None
+    };
+    let known_ind = ind_g.known_tails_full();
     let mut best_mrr = f64::MIN;
     let mut best_epoch = 0usize;
     let mut best_model = model.clone();
@@ -552,7 +573,8 @@ fn main() {
         // reference harness (train_and_validate: eval every num_epoch/10
         // epochs, load best checkpoint before test). Validation queries
         // live on the TRAINING graph; the inductive graph stays untouched
-        // until test.
+        // until test unless TRANSFER_VALID=1 or SELECT=transfer is set for
+        // diagnostics.
         if (epoch + 1) % 2 == 0 {
             let v = evaluate(
                 &model,
@@ -564,8 +586,24 @@ fn main() {
                 None,
             );
             eprint!("  valid MRR {:.4}", v.mrr);
-            if v.mrr > best_mrr {
-                best_mrr = v.mrr;
+            let mut selection_mrr = v.mrr;
+            if report_transfer {
+                let tv = evaluate(
+                    &model,
+                    n_ind_ent,
+                    edges_transfer_valid.as_ref().unwrap(),
+                    &transfer_valid_queries,
+                    &known_ind,
+                    batch_size,
+                    None,
+                );
+                eprint!("  transfer-valid MRR {:.4}", tv.mrr);
+                if select_transfer {
+                    selection_mrr = tv.mrr;
+                }
+            }
+            if selection_mrr > best_mrr {
+                best_mrr = selection_mrr;
                 best_epoch = epoch;
                 best_model = model.clone();
             }
@@ -586,12 +624,18 @@ fn main() {
         best_epoch = epochs.saturating_sub(1);
         best_model = model.clone();
     }
-    eprintln!("selected epoch {best_epoch} (valid MRR {best_mrr:.4})");
+    eprintln!(
+        "selected epoch {best_epoch} ({} {best_mrr:.4})",
+        if select_transfer {
+            "transfer-valid MRR"
+        } else {
+            "valid MRR"
+        }
+    );
 
     // Inductive evaluation on the disjoint graph: same relations, new
     // entities; the model transfers because nothing entity-wise was learned.
     let (heads_e, tails_e, etypes_e, tails_host_e) = ind_g.edge_tensors::<TB>(&device, None);
-    let known_ind = ind_g.known_tails_full();
     let mut test_queries: Vec<(usize, usize, usize)> = Vec::new();
     for &(h, r, t) in &ind_g.test {
         test_queries.push((h, r, t));

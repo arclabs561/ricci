@@ -121,6 +121,9 @@ BATCH=64 FAILURE_DUMP=/tmp/ricci-failures.tsv EXPORT_PREDICTIONS=/tmp/ricci-pred
 With `wgpu` or `metal`, PNA uses the native segment-index kernel by default.
 Set `PNA_SCATTER=host` to force the reference host fallback, which prints its
 per-epoch `snapshot`, `scan`, and `gather` costs.
+Set `TRANSFER_VALID=1` to print inductive-validation MRR during training, or
+`SELECT=transfer` to select checkpoints by that diagnostic instead of the
+reference train-graph validation.
 
 ```text
 selected epoch 1 (valid MRR 0.3438)
