@@ -99,20 +99,8 @@ Reference-shaped PNA mode:
 AGG=pna EPOCHS=8 cargo run --release --example inductive_link_prediction
 ```
 
-```text
-fb237_v1: 1594 entities, 180 relations (360 with inverses), 4245 train triples; inductive graph: 1093 entities, 1993 observed / 205 test triples
-aggregation: pna  epochs: 8
-fb237_v1 -> fb237_v1_ind (both directions, n = 410):
-Hits@10 (50 filtered negatives, GraIL protocol): 0.637
-full-ranking filtered Hits@10: 0.298   MRR: 0.177
-references on this split: GraIL 0.642, NBFNet 0.834 (50-neg protocol)
-```
-
-Transfer genuinely happens (the 50-negative random floor is about 0.196;
-sum-aggregation variants of this harness land in the 0.52-0.59 range, and
-PNA closes most of the remaining gap to GraIL. NBFNet's published 0.834 is
-still not reached. The example's doc comment records the full protocol
-provenance and one negative finding about validation-based checkpoint
+Transfer genuinely happens; the example's doc comment records the full
+protocol provenance and one negative finding about validation-based checkpoint
 selection under distribution shift.
 
 ## Proof Sketches

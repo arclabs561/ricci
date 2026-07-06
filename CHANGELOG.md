@@ -9,9 +9,13 @@
   snapshot, then use differentiable gathers so gradients route to the
   winning edge values.
 - `examples/inductive_link_prediction` accepts `AGG=pna`, using the new
-  scatter helpers for exact PNA aggregation. On GraIL FB15k-237 v1 with
-  `EPOCHS=8`, the 50-negative Hits@10 reached 0.637, essentially matching
-  GraIL's 0.642 on the same protocol while still below NBFNet's 0.834.
+  scatter helpers for exact PNA aggregation.
+
+### Fixed
+
+- `examples/inductive_link_prediction`: match NBFNet's `remove_one_hop`
+  protocol by sampling negative candidates before propagation and dropping
+  one-hop edges for every sampled candidate pair, not only the positive pair.
 
 ## [0.9.0] - 2026-07-05
 

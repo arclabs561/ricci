@@ -17,14 +17,11 @@
 //! script/run.py. The default is fast sum aggregation; `AGG=pna` switches
 //! to exact PNA aggregation via ricci's segment max/min helpers.
 //!
-//! Observed on this harness: default sum variants land in the 0.52-0.59
-//! 50-negative Hits@10 range; `AGG=pna EPOCHS=8` reaches 0.637, essentially
-//! matching GraIL's 0.642 while still below NBFNet's 0.834. Transfer to
-//! unseen entities genuinely happens (random floor is about 0.196). One
-//! negative finding worth keeping: selecting the checkpoint by validation
-//! MRR on the TRAINING graph (the reference protocol) tracks
-//! in-distribution quality, not cross-graph transfer, and can pick a
-//! worse-transferring epoch.
+//! Exact-PNA numbers should be measured with the strict candidate-level
+//! `remove_one_hop` path in this file. One negative finding worth keeping:
+//! selecting the checkpoint by validation MRR on the TRAINING graph (the
+//! reference protocol) tracks in-distribution quality, not cross-graph
+//! transfer, and can pick a worse-transferring epoch.
 //!
 //! Data-gated: run `scripts/fetch_grail_fb237v1.sh` first; without data
 //! this prints instructions and exits 0.
@@ -359,30 +356,10 @@ fn main() {
         let mut diag_h = 0.0_f32; // mean |state| on the first batch: explosion/collapse probe
         for chunk in order.chunks(BATCH) {
             let batch: Vec<_> = chunk.iter().map(|&i| queries[i]).collect();
-            // Drop ALL edges between each query pair from the message graph
-            // (any relation, both orientations): FB15k-237 is dense in
-            // pair-parallel relations, and any surviving 1-hop edge is a
-            // copy path the model exploits instead of learning multi-hop
-            // structure (the reference's remove_one_hop).
-            let drop: HashSet<(usize, usize)> = batch
-                .iter()
-                .flat_map(|&(s, _, t)| [(s, t), (t, s)])
-                .collect();
-            let (heads, tails, etypes, tails_host) =
-                train_g.edge_tensors::<TB>(&device, Some(&drop));
-            let sources: Vec<usize> = batch.iter().map(|q| q.0).collect();
-            let rels_q: Vec<usize> = batch.iter().map(|q| q.1).collect();
-            let states = model.propagate(
-                n_train_ent,
-                &sources,
-                &rels_q,
-                heads,
-                tails,
-                etypes,
-                &tails_host,
-                &device,
-            );
-            // Candidates: positive tail + uniform negatives.
+            // Candidates: positive tail + uniform negatives. Sample these
+            // before building the message graph: reference `remove_one_hop`
+            // removes edges between the source and every candidate, not only
+            // the positive tail.
             let mut state2 = state ^ 0x9e3779b97f4a7c15;
             let cands: Vec<Vec<usize>> = batch
                 .iter()
@@ -401,6 +378,30 @@ fn main() {
                     row
                 })
                 .collect();
+            // Drop ALL edges between each query pair from the message graph
+            // (any relation, both orientations): FB15k-237 is dense in
+            // pair-parallel relations, and any surviving 1-hop edge is a
+            // copy path the model exploits instead of learning multi-hop
+            // structure (the reference's remove_one_hop).
+            let drop: HashSet<(usize, usize)> = batch
+                .iter()
+                .zip(cands.iter())
+                .flat_map(|(&(s, _, _), row)| row.iter().flat_map(move |&t| [(s, t), (t, s)]))
+                .collect();
+            let (heads, tails, etypes, tails_host) =
+                train_g.edge_tensors::<TB>(&device, Some(&drop));
+            let sources: Vec<usize> = batch.iter().map(|q| q.0).collect();
+            let rels_q: Vec<usize> = batch.iter().map(|q| q.1).collect();
+            let states = model.propagate(
+                n_train_ent,
+                &sources,
+                &rels_q,
+                heads,
+                tails,
+                etypes,
+                &tails_host,
+                &device,
+            );
             if batches == 0 {
                 diag_h = states
                     .clone()
@@ -453,6 +454,18 @@ fn main() {
             }
         }
         eprintln!();
+    }
+    if best_mrr == f64::MIN {
+        let v = evaluate(
+            &model,
+            n_train_ent,
+            &edges_valid,
+            &valid_queries,
+            &known_full,
+        );
+        best_mrr = v.mrr;
+        best_epoch = epochs.saturating_sub(1);
+        best_model = model.clone();
     }
     eprintln!("selected epoch {best_epoch} (valid MRR {best_mrr:.4})");
 
