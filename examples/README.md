@@ -118,9 +118,9 @@ BATCH=64 FAILURE_DUMP=/tmp/ricci-failures.tsv EXPORT_PREDICTIONS=/tmp/ricci-pred
   AGG=pna EPOCHS=8 cargo run --release --features wgpu --example inductive_link_prediction
 ```
 
-In PNA mode the example also prints the exact segment max/min host fallback
-cost per epoch (`snapshot`, `scan`, and `gather`). That number should go down
-when the native scatter extension replaces the host winner pass.
+With `wgpu` or `metal`, PNA uses the native segment-index kernel by default.
+Set `PNA_SCATTER=host` to force the reference host fallback, which prints its
+per-epoch `snapshot`, `scan`, and `gather` costs.
 
 ```text
 selected epoch 7 (valid MRR 0.3296)

@@ -14,12 +14,13 @@ categories = ["science", "algorithms"]
 
 [features]
 default = []
-wgpu = ["burn/wgpu"]
-metal = ["burn/metal"]
+wgpu = ["burn/cubecl", "burn/wgpu", "dep:cubecl"]
+metal = ["burn/cubecl", "burn/metal", "dep:cubecl"]
 
 [dependencies]
 burn = { version = "0.20.0", default-features = false, features = ["std"] }
 burn-ndarray = { version = "0.20.0", default-features = true }
+cubecl = { version = "0.9.0", default-features = false, optional = true }
 # The curvature module composes the ecosystem's primitives: random-walk
 # measures (lapl), hop distances (graphops), entropic W1 (wass).
 graphops = "0.5"

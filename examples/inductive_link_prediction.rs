@@ -49,6 +49,8 @@ use burn::tensor::backend::Backend;
 use burn::tensor::{activation, Int, Tensor, TensorData};
 #[cfg(not(any(feature = "wgpu", feature = "metal")))]
 use burn_ndarray::NdArray;
+#[cfg(any(feature = "wgpu", feature = "metal"))]
+use ricci::scatter::scatter_max_min_indices_wgpu;
 use ricci::scatter::{reset_scatter_metrics, scatter_max_min, scatter_metrics, ScatterMetrics};
 use ricci::NBFConv;
 
@@ -56,6 +58,49 @@ use ricci::NBFConv;
 type TB = Autodiff<Wgpu<f32, i32>>;
 #[cfg(not(any(feature = "wgpu", feature = "metal")))]
 type TB = Autodiff<NdArray<f32>>;
+
+struct ScatterChoice;
+
+trait ExampleScatter<B: Backend> {
+    fn max_min(
+        values: Tensor<B, 3>,
+        segments: &[usize],
+        num_segments: usize,
+    ) -> (Tensor<B, 3>, Tensor<B, 3>);
+}
+
+#[cfg(any(feature = "wgpu", feature = "metal"))]
+impl ExampleScatter<TB> for ScatterChoice {
+    fn max_min(
+        values: Tensor<TB, 3>,
+        segments: &[usize],
+        num_segments: usize,
+    ) -> (Tensor<TB, 3>, Tensor<TB, 3>) {
+        if std::env::var("PNA_SCATTER").is_ok_and(|value| value == "host") {
+            return scatter_max_min(values, segments, num_segments);
+        }
+        let (idx_max, idx_min, mask) =
+            scatter_max_min_indices_wgpu(values.clone().inner(), segments, num_segments);
+        let idx_max = Tensor::<TB, 3, Int>::from_inner(idx_max);
+        let idx_min = Tensor::<TB, 3, Int>::from_inner(idx_min);
+        let mask = Tensor::<TB, 3>::from_inner(mask);
+        (
+            values.clone().gather(1, idx_max) * mask.clone(),
+            values.gather(1, idx_min) * mask,
+        )
+    }
+}
+
+#[cfg(not(any(feature = "wgpu", feature = "metal")))]
+impl ExampleScatter<TB> for ScatterChoice {
+    fn max_min(
+        values: Tensor<TB, 3>,
+        segments: &[usize],
+        num_segments: usize,
+    ) -> (Tensor<TB, 3>, Tensor<TB, 3>) {
+        scatter_max_min(values, segments, num_segments)
+    }
+}
 
 // Hyperparameters follow NBFNet's config/inductive/fb15k237.yaml (dim 32,
 // 6 layers, lr 5e-3, 32 negatives, adversarial temperature 0.5, 20
@@ -137,7 +182,11 @@ fn init_model<B: Backend>(n_rel2: usize, pna: bool, device: &B::Device) -> NbfNe
     }
 }
 
-impl<B: Backend> NbfNet<B> {
+impl<B> NbfNet<B>
+where
+    B: Backend,
+    ScatterChoice: ExampleScatter<B>,
+{
     /// Pair states for a batch of queries `(source, relation)` over the
     /// given edge list: `[Q, N, d]`.
     #[allow(clippy::too_many_arguments)]
@@ -224,7 +273,7 @@ impl<B: Backend> NbfNet<B> {
                 );
                 let mean = (sums + h0.clone()) / degp1.clone();
                 let sq_mean = (sq_sums + h0.clone().powf_scalar(2.0)) / degp1.clone();
-                let (mx, mn) = scatter_max_min(msgs, tails_host, n);
+                let (mx, mn) = ScatterChoice::max_min(msgs, tails_host, n);
                 let mx = mx.max_pair(h0.clone());
                 let mn = mn.min_pair(h0.clone());
                 let std = (sq_mean - mean.clone().powf_scalar(2.0))
@@ -492,7 +541,12 @@ fn main() {
             );
         }
         if pna {
-            print_scatter_metrics(scatter_metrics().saturating_sub(scatter_start));
+            let metrics = scatter_metrics().saturating_sub(scatter_start);
+            if metrics.calls == 0 {
+                eprint!("  scatter native");
+            } else {
+                print_scatter_metrics(metrics);
+            }
         }
         // Model selection by validation MRR every 2 epochs, as in the
         // reference harness (train_and_validate: eval every num_epoch/10
