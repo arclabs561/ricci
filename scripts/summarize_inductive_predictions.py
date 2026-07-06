@@ -54,13 +54,26 @@ class SweepPoint:
 
 
 def rank_queries(
-    graph: Graph, queries: list[Query], support_alpha: float = 0.0
+    graph: Graph,
+    queries: list[Query],
+    support_alpha: float = 0.0,
+    path_alpha: float = 0.0,
 ) -> list[RankedQuery]:
     ranked = []
+    distance_cache: dict[str, dict[str, int]] = {}
     for query in queries:
         scores = dict(query.predictions)
+        distances = None
+        if path_alpha != 0.0:
+            distances = distances_from_source(graph, distance_cache, query.source)
         gold_score = adjusted_score(
-            graph, query.relation, query.target, scores[query.target], support_alpha
+            graph,
+            query.relation,
+            query.target,
+            scores[query.target],
+            support_alpha,
+            path_alpha,
+            distances,
         )
         filtered = graph.known[(query.source, query.relation)]
 
@@ -71,7 +84,15 @@ def rank_queries(
         for entity, score in query.predictions:
             if entity == query.target or entity in filtered:
                 continue
-            score = adjusted_score(graph, query.relation, entity, score, support_alpha)
+            score = adjusted_score(
+                graph,
+                query.relation,
+                entity,
+                score,
+                support_alpha,
+                path_alpha,
+                distances,
+            )
             candidate_count += 1
             if score > gold_score:
                 rank += 1
@@ -97,11 +118,46 @@ def rank_queries(
 
 
 def adjusted_score(
-    graph: Graph, relation: str, entity: str, score: float, support_alpha: float
+    graph: Graph,
+    relation: str,
+    entity: str,
+    score: float,
+    support_alpha: float,
+    path_alpha: float,
+    distances: dict[str, int] | None,
 ) -> float:
-    if support_alpha == 0.0:
-        return score
-    return score + support_alpha * math.log1p(graph.relation_support(relation, entity))
+    if support_alpha != 0.0:
+        score += support_alpha * math.log1p(graph.relation_support(relation, entity))
+    if path_alpha != 0.0 and distances is not None:
+        distance = distances.get(entity)
+        if distance is not None:
+            score += path_alpha / (1.0 + distance)
+    return score
+
+
+def distances_from_source(
+    graph: Graph, cache: dict[str, dict[str, int]], source: str, max_hops: int = 5
+) -> dict[str, int]:
+    if source not in cache:
+        cache[source] = bounded_distances(graph, source, max_hops)
+    return cache[source]
+
+
+def bounded_distances(graph: Graph, source: str, max_hops: int) -> dict[str, int]:
+    distances = {source: 0}
+    frontier = [source]
+    for depth in range(1, max_hops + 1):
+        next_frontier = []
+        for node in frontier:
+            for next_node in sorted(graph.adj[node]):
+                if next_node in distances:
+                    continue
+                distances[next_node] = depth
+                next_frontier.append(next_node)
+        frontier = next_frontier
+        if not frontier:
+            break
+    return distances
 
 
 def estimated_hits_at_k(
@@ -454,6 +510,70 @@ def print_support_sweep(
         print_support_delta_details(baseline, best_hits10, "best H@10")
 
 
+def print_evidence_sweep(
+    graph: Graph, queries: list[Query], baseline: list[RankedQuery]
+) -> None:
+    print("evidence calibration sweep:")
+    print(
+        "  score = model_score + support_alpha * log1p(train relation support) "
+        "+ path_alpha / (1 + train path length)"
+    )
+    print("  support  path    MRR    H@10  median  fixed@10  lost@10")
+    baseline_hits = [item.rank <= 10 for item in baseline]
+    points = []
+    for support_alpha in [0.0, 0.4, 0.8]:
+        for path_alpha in [0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0]:
+            ranked = rank_queries(
+                graph,
+                queries,
+                support_alpha=support_alpha,
+                path_alpha=path_alpha,
+            )
+            ranks = sorted(item.rank for item in ranked)
+            hits = [item.rank <= 10 for item in ranked]
+            fixed = sum(
+                1 for before, after in zip(baseline_hits, hits) if not before and after
+            )
+            lost = sum(
+                1 for before, after in zip(baseline_hits, hits) if before and not after
+            )
+            mrr = mean_reciprocal_rank(ranked)
+            hits10 = hits_at(ranked, 10)
+            points.append(
+                (
+                    mrr,
+                    hits10,
+                    support_alpha,
+                    path_alpha,
+                    ranks[len(ranks) // 2],
+                    fixed,
+                    lost,
+                )
+            )
+            print(
+                f"    {support_alpha:>4.1f}  {path_alpha:>4.2f}  "
+                f"{mrr:.4f}  {hits10:.4f}  {ranks[len(ranks) // 2]:>6}  "
+                f"{fixed:>8}  {lost:>7}"
+            )
+
+    best = max(points, key=lambda row: (row[0], row[1]))
+    best_hits10 = max(points, key=lambda row: (row[1], row[0]))
+    print(
+        "  best MRR: "
+        f"support {best[2]:.1f} path {best[3]:.2f} "
+        f"MRR {best[0]:.4f} H@10 {best[1]:.4f} "
+        f"median {best[4]} fixed@10 {best[5]} lost@10 {best[6]}"
+    )
+    if best_hits10 != best:
+        print(
+            "  best H@10: "
+            f"support {best_hits10[2]:.1f} path {best_hits10[3]:.2f} "
+            f"MRR {best_hits10[0]:.4f} H@10 {best_hits10[1]:.4f} "
+            f"median {best_hits10[4]} fixed@10 {best_hits10[5]} "
+            f"lost@10 {best_hits10[6]}"
+        )
+
+
 def print_support_delta_details(
     baseline: list[RankedQuery], point: SweepPoint, label: str
 ) -> None:
@@ -552,6 +672,11 @@ def main() -> None:
         action="store_true",
         help="Also print frequent relation-labeled train-path patterns in failures.",
     )
+    parser.add_argument(
+        "--evidence-sweep",
+        action="store_true",
+        help="Also sweep a diagnostic relation-support plus train-path calibration.",
+    )
     args = parser.parse_args()
 
     graph = Graph(args.data_dir)
@@ -562,6 +687,8 @@ def main() -> None:
         print_path_patterns(graph, ranked)
     if args.support_sweep:
         print_support_sweep(graph, queries, ranked)
+    if args.evidence_sweep:
+        print_evidence_sweep(graph, queries, ranked)
 
 
 if __name__ == "__main__":

@@ -164,6 +164,8 @@ rank>10 and rank>50 failures.
 Add `--support-sweep` to test a simple train-relation-support prior over the
 exported scores. It also reports which relations and cases move in or out of
 Hits@10. This is a diagnostic, not the evaluation protocol.
+Add `--evidence-sweep` to test relation support plus train-path strength over
+the exported scores. This is also a diagnostic, not the evaluation protocol.
 
 ```text
 selected epoch 1 (valid MRR 0.3728)
