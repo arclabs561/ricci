@@ -15,7 +15,7 @@ repository:
   delete_branch_on_merge: true
 
   topics:
-    - candle
+    - burn
     - gnn
     - graph-neural-network
     - machine-learning

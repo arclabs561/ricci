@@ -2,7 +2,7 @@
 name = "ricci"
 version = "0.9.0"
 edition = "2021"
-description = "Graph neural network primitives: GCN and hyperbolic GCN on Burn tensors"
+description = "Graph neural network layers"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arclabs561/ricci"
 homepage = "https://github.com/arclabs561/ricci"
