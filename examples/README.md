@@ -123,20 +123,20 @@ Set `PNA_SCATTER=host` to force the reference host fallback, which prints its
 per-epoch `snapshot`, `scan`, and `gather` costs.
 
 ```text
-selected epoch 7 (valid MRR 0.3296)
-full rank: mean 126.1  median 29  p90 339  p95 727  p99 1055  max 1088 (of 1093 entities)
-full recall@k / Hits@k: @1 0.112  @3 0.232  @10 0.368  @50 0.583
-sampled-50 recall@k / Hits@k: @1 0.407  @3 0.622  @10 0.817
-sampled-50 rank: mean 6.7  median 2  p90 17  max 51
-score margin gold-best-corrupt: mean -3.599  p10 -7.197  median -3.844; eval coverage 1.000  |h| 1.909
+selected epoch 1 (valid MRR 0.3438)
+full rank: mean 120.9  median 9  p90 358  p95 899  p99 1070  max 1080 (of 1093 entities)
+full recall@k / Hits@k: @1 0.195  @3 0.376  @10 0.510  @50 0.668
+sampled-50 recall@k / Hits@k: @1 0.507  @3 0.666  @10 0.837
+sampled-50 rank: mean 6.5  median 1  p90 17  max 51
+score margin gold-best-corrupt: mean -1.259  p10 -3.571  median -1.149; eval coverage 1.000  |h| 2.250
 fb237_v1 -> fb237_v1_ind (both directions, n = 410):
-Hits@10 (50 filtered negatives, GraIL protocol): 0.817
-full-ranking filtered Hits@10: 0.368   MRR: 0.201
+Hits@10 (50 filtered negatives, GraIL protocol): 0.837
+full-ranking filtered Hits@10: 0.510   MRR: 0.307
 references on this split: GraIL 0.642, NBFNet 0.834 (50-neg protocol)
 ```
 
-The sampled protocol is close to NBFNet's reported number. The full-ranking
-numbers are lower and are the stricter diagnostic.
+The sampled protocol is close to NBFNet's reported number. Full-ranking is the
+stricter diagnostic.
 
 ## Proof Sketches
 
