@@ -29,6 +29,7 @@
 //! Run: cargo run --release --example inductive_link_prediction
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::Path;
 
 use burn::backend::Autodiff;
@@ -548,6 +549,7 @@ fn main() {
         "score margin gold-best-corrupt: mean {:.3}  p10 {:.3}  median {:.3}; eval coverage {:.3}  |h| {:.3}",
         out.margin_mean, out.margin_p10, out.margin_median, out.coverage, out.state_abs
     );
+    let _ = std::io::stderr().flush();
     println!(
         "fb237_v1 -> fb237_v1_ind (both directions, n = {}):\n\
          Hits@10 (50 filtered negatives, GraIL protocol): {:.3}\n\
