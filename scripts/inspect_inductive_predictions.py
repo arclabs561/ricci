@@ -38,6 +38,7 @@ class Graph:
         self.out: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.inc: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.adj: dict[str, set[str]] = defaultdict(set)
+        self.labeled_adj: dict[str, list[tuple[str, str]]] = defaultdict(list)
         self.known: dict[tuple[str, str], set[str]] = defaultdict(set)
         self.relation_tails: dict[str, Counter[str]] = defaultdict(Counter)
         self.relation_heads: dict[str, Counter[str]] = defaultdict(Counter)
@@ -47,6 +48,8 @@ class Graph:
             self.inc[tail].append((relation, head))
             self.adj[head].add(tail)
             self.adj[tail].add(head)
+            self.labeled_adj[head].append((relation, tail))
+            self.labeled_adj[tail].append((inverse_relation(relation), head))
             self.relation_tails[relation][tail] += 1
             self.relation_heads[relation][head] += 1
 
@@ -73,18 +76,30 @@ class Graph:
         return signature
 
     def path(self, source: str, target: str, max_hops: int = 5) -> list[str] | None:
-        if source == target:
+        labeled_path = self.labeled_path(source, target, max_hops=max_hops)
+        if labeled_path is None:
+            return None
+        if not labeled_path:
             return [source]
+        nodes = [source]
+        nodes.extend(step[1] for step in labeled_path)
+        return nodes
+
+    def labeled_path(
+        self, source: str, target: str, max_hops: int = 5
+    ) -> list[tuple[str, str]] | None:
+        if source == target:
+            return []
         seen = {source}
-        queue: deque[tuple[str, list[str]]] = deque([(source, [source])])
+        queue: deque[tuple[str, list[tuple[str, str]]]] = deque([(source, [])])
         while queue:
             node, path = queue.popleft()
-            if len(path) > max_hops:
+            if len(path) >= max_hops:
                 continue
-            for next_node in sorted(self.adj[node]):
+            for relation, next_node in sorted(self.labeled_adj[node]):
                 if next_node in seen:
                     continue
-                next_path = [*path, next_node]
+                next_path = [*path, (relation, next_node)]
                 if next_node == target:
                     return next_path
                 seen.add(next_node)
@@ -203,8 +218,8 @@ def print_case(graph: Graph, case: Case, top_k: int) -> None:
         f"margin={margin:.6f}"
     )
 
-    gold_path = graph.path(query.source, query.target)
-    corrupt_path = graph.path(query.source, case.best_corrupt)
+    gold_path = graph.labeled_path(query.source, query.target)
+    corrupt_path = graph.labeled_path(query.source, case.best_corrupt)
     print(f"train path to gold: {format_path(gold_path)}")
     print(f"train path to best corrupt: {format_path(corrupt_path)}")
     print(
@@ -262,10 +277,15 @@ def format_counter(counter: Counter[str], limit: int) -> str:
     return ", ".join(f"{key} ({count})" for key, count in counter.most_common(limit))
 
 
-def format_path(path: list[str] | None) -> str:
+def format_path(path: list[tuple[str, str]] | None) -> str:
     if path is None:
         return "<none within 5 hops>"
-    return " -> ".join(path)
+    if not path:
+        return "<self>"
+    pieces = []
+    for relation, node in path:
+        pieces.append(f"-[{relation}]-> {node}")
+    return " ".join(pieces)
 
 
 def main() -> None:

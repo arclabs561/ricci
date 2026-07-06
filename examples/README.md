@@ -147,6 +147,9 @@ Inspect concrete ranking failures:
 python3 scripts/inspect_inductive_predictions.py /tmp/ricci-predictions.txt
 ```
 
+The inspector prints relation-labeled train paths to the gold and best corrupt
+when one is visible within five hops.
+
 Summarize an exported prediction file without rerunning training:
 
 ```bash
