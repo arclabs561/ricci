@@ -91,6 +91,11 @@ class Graph:
                 queue.append((next_node, next_path))
         return None
 
+    def relation_support(self, relation: str, entity: str) -> int:
+        if relation.endswith("^-1"):
+            return self.relation_heads[inverse_relation(relation)][entity]
+        return self.relation_tails[relation][entity]
+
 
 def inverse_relation(relation: str) -> str:
     if relation.endswith("^-1"):
@@ -207,6 +212,11 @@ def print_case(graph: Graph, case: Case, top_k: int) -> None:
         f"gold={str(query.target in graph.adj[query.source]).lower()} "
         f"best_corrupt={str(case.best_corrupt in graph.adj[query.source]).lower()}"
     )
+    print(
+        "train relation support: "
+        f"gold={graph.relation_support(query.relation, query.target)} "
+        f"best_corrupt={graph.relation_support(query.relation, case.best_corrupt)}"
+    )
 
     print_relation_context(graph, query.relation)
     print_entity_context(graph, "source", query.source)
@@ -220,7 +230,11 @@ def print_case(graph: Graph, case: Case, top_k: int) -> None:
             f"{name} ({count})"
             for name, count in graph.signature(entity).most_common(3)
         )
-        print(f"  {rank:2d}. {entity:12s} {score:9.6f}{marker}  {signature}")
+        support = graph.relation_support(query.relation, entity)
+        print(
+            f"  {rank:2d}. {entity:12s} {score:9.6f}{marker}  "
+            f"rel-support={support}  {signature}"
+        )
 
 
 def print_relation_context(graph: Graph, relation: str) -> None:
