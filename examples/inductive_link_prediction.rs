@@ -14,13 +14,14 @@
 //! the stricter full-entity ranking metrics, which the 50-negative number
 //! overestimates (Galkin et al., ICLR 2024, Fig. 4). Hyperparameters and
 //! training protocol follow NBFNet's config/inductive/fb15k237.yaml and
-//! script/run.py. The default is fast sum aggregation; `AGG=pna` switches
-//! to exact PNA aggregation via ricci's segment max/min helpers.
+//! script/run.py, including TorchDrug's degree-based sample weights. The
+//! default is fast sum aggregation; `AGG=pna` switches to exact PNA
+//! aggregation via ricci's segment max/min helpers.
 //!
 //! Observed on this harness with strict candidate-level `remove_one_hop`:
-//! `AGG=pna EPOCHS=8 --features wgpu` reaches 0.837 50-negative Hits@10,
+//! `AGG=pna EPOCHS=8 --features wgpu` reaches 0.854 50-negative Hits@10,
 //! close to NBFNet's 0.834 and above GraIL's 0.642; full-rank Hits@10 is
-//! 0.510, MRR 0.307. PNA is slower than sum; on WGPU/Metal the exact
+//! 0.517, MRR 0.313. PNA is slower than sum; on WGPU/Metal the exact
 //! max/min winners are computed on device, while the CPU/reference path still
 //! uses the host fallback. One negative finding worth keeping: selecting the
 //! checkpoint by validation MRR on the TRAINING graph (the reference protocol)
@@ -32,8 +33,8 @@
 //!
 //! Run: cargo run --release --example inductive_link_prediction
 //! Knobs: `BATCH=64`, `FAILURE_DUMP=/tmp/failures.tsv`, and
-//! `EXPORT_PREDICTIONS=/tmp/predictions.txt`. `SAMPLE_WEIGHT=1` enables
-//! TorchDrug's degree-based training sample weights as a parity diagnostic.
+//! `EXPORT_PREDICTIONS=/tmp/predictions.txt`. `SAMPLE_WEIGHT=0` disables
+//! TorchDrug's degree-based training sample weights as an ablation.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -374,7 +375,7 @@ fn main() {
     let select_transfer = std::env::var("SELECT").is_ok_and(|v| v == "transfer");
     let report_transfer =
         select_transfer || std::env::var("TRANSFER_VALID").is_ok_and(|v| v != "0");
-    let sample_weight = env_flag("SAMPLE_WEIGHT");
+    let sample_weight = env_flag_default("SAMPLE_WEIGHT", true);
     let negative_mode = NegativeMode::from_env();
     eprintln!(
         "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}  negatives: {}  sample-weight: {}",
@@ -1332,8 +1333,8 @@ fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse().ok()
 }
 
-fn env_flag(name: &str) -> bool {
-    std::env::var(name).is_ok_and(|v| v != "0")
+fn env_flag_default(name: &str, default: bool) -> bool {
+    std::env::var(name).map_or(default, |v| v != "0")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

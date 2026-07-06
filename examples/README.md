@@ -85,8 +85,9 @@ Trains an NBFNet-shaped model (Zhu et al., NeurIPS 2021) from `NBFConv`'s
 edge-list forward on the GraIL FB15k-237 v1 split, then evaluates on a
 disjoint graph whose entities were never seen in training. Nothing
 entity-specific is learned, so the trained model runs unchanged on the new
-vocabulary. Data-gated: fetch first, then run. Default sum aggregation takes
-about 35 minutes on CPU; exact PNA mode is slower.
+vocabulary. Data-gated: fetch first, then run. Default sum aggregation uses
+TorchDrug-style sample weights and takes about 35 minutes on CPU; exact PNA
+mode is slower.
 
 ```bash
 scripts/fetch_grail_fb237v1.sh
@@ -124,8 +125,8 @@ per-epoch `snapshot`, `scan`, and `gather` costs.
 Set `TRANSFER_VALID=1` to print inductive-validation MRR during training, or
 `SELECT=transfer` to select checkpoints by that diagnostic instead of the
 reference train-graph validation.
-Set `SAMPLE_WEIGHT=1` to match TorchDrug's degree-based training sample
-weights as a parity diagnostic.
+Set `SAMPLE_WEIGHT=0` to disable TorchDrug's degree-based training sample
+weights for an ablation.
 Set `NEGATIVE_MODE=signature` for a diagnostic hard-negative sampler whose
 negatives share at least one observed relation signature with the gold entity.
 The default is the reference uniform strict-negative sampler.
@@ -146,21 +147,29 @@ Inspect concrete ranking failures:
 python3 scripts/inspect_inductive_predictions.py /tmp/ricci-predictions.txt
 ```
 
+Summarize an exported prediction file without rerunning training:
+
+```bash
+python3 scripts/summarize_inductive_predictions.py /tmp/ricci-predictions.txt
+```
+
 ```text
-selected epoch 1 (valid MRR 0.3438)
-full rank: mean 120.9  median 9  p90 358  p95 899  p99 1070  max 1080 (of 1093 entities)
-full recall@k / Hits@k: @1 0.195  @3 0.376  @10 0.510  @50 0.668
-sampled-50 recall@k / Hits@k: @1 0.507  @3 0.666  @10 0.837
-sampled-50 rank: mean 6.5  median 1  p90 17  max 51
-score margin gold-best-corrupt: mean -1.259  p10 -3.571  median -1.149; eval coverage 1.000  |h| 2.250
+selected epoch 1 (valid MRR 0.3728)
+full rank: mean 122.5  median 8  p90 357  p95 901  p99 1091  max 1091 (of 1093 entities)
+full recall@k / Hits@k: @1 0.202  @3 0.371  @10 0.517  @50 0.676
+sampled-50 recall@k / Hits@k: @1 0.549  @3 0.690  @10 0.854
+estimated-50 Hits@10 (TorchDrug h@10_50): 0.842
+sampled-50 rank: mean 6.6  median 1  p90 18  max 51
+score margin gold-best-corrupt: mean -0.962  p10 -2.538  median -0.877; eval coverage 1.000  |h| 2.376
 fb237_v1 -> fb237_v1_ind (both directions, n = 410):
-Hits@10 (50 filtered negatives, GraIL protocol): 0.837
-full-ranking filtered Hits@10: 0.510   MRR: 0.307
+Hits@10 (50 filtered negatives, GraIL protocol): 0.854
+full-ranking filtered Hits@10: 0.517   MRR: 0.313
 references on this split: GraIL 0.642, NBFNet 0.834 (50-neg protocol)
 ```
 
-The sampled protocol is close to NBFNet's reported number. Full-ranking is the
-stricter diagnostic.
+The external evaluator reports sampled H@10 0.842, type-matched-negative H@10
+0.624, and all-entity H@10 0.517 for the same exported predictions.
+Full-ranking is the stricter diagnostic.
 
 ## Proof Sketches
 
