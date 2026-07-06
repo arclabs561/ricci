@@ -678,7 +678,7 @@ def print_gated_evidence_sweep(
         low_loss = sorted(low_loss, key=lambda p: (p.mrr, p.hits10), reverse=True)
         for point in low_loss[:6]:
             print_evidence_point("  candidate", point)
-        print_evidence_delta_details(baseline, low_loss[0], "best low-loss")
+        print_evidence_delta_details(graph, baseline, low_loss[0], "best low-loss")
 
 
 def evidence_sweep_point(
@@ -728,9 +728,29 @@ def print_evidence_point(label: str, point: EvidenceSweepPoint) -> None:
 
 
 def print_evidence_delta_details(
-    baseline: list[RankedQuery], point: EvidenceSweepPoint, label: str
+    graph: Graph, baseline: list[RankedQuery], point: EvidenceSweepPoint, label: str
 ) -> None:
     print_evidence_point(f"gated evidence deltas ({label})", point)
+    print("  by gold relation-support bucket:")
+    print_delta_bucket_rows(
+        bucket_deltas(
+            baseline,
+            point.ranked,
+            lambda item: support_bucket(item.gold_relation_support),
+        ),
+        ["0", "1", "2-4", "5-9", "10+"],
+    )
+    print("  by gold train-path length:")
+    print_delta_bucket_rows(
+        bucket_deltas(
+            baseline,
+            point.ranked,
+            lambda item: path_bucket(
+                path_len(graph, item.query.source, item.query.target)
+            ),
+        ),
+        ["1", "2", "3", "4-5", "none"],
+    )
     print("  most helped relations:")
     print_relation_delta_rows(relation_deltas(baseline, point.ranked)[:6])
     print("  most hurt relations:")
@@ -880,17 +900,7 @@ def query_key(query: Query) -> tuple[str, str, str, str]:
 def relation_deltas(
     baseline: list[RankedQuery], current: list[RankedQuery], reverse: bool = True
 ) -> list[tuple[str, RelationDelta]]:
-    deltas: dict[str, RelationDelta] = defaultdict(RelationDelta)
-    for before, after in zip(baseline, current):
-        delta = deltas[before.query.relation]
-        delta.count += 1
-        delta.baseline_rr += 1.0 / before.rank
-        delta.adjusted_rr += 1.0 / after.rank
-        delta.baseline_hits10 += int(before.rank <= 10)
-        delta.adjusted_hits10 += int(after.rank <= 10)
-        delta.rank_delta += after.rank - before.rank
-        delta.fixed10 += int(before.rank > 10 and after.rank <= 10)
-        delta.lost10 += int(before.rank <= 10 and after.rank > 10)
+    deltas = bucket_deltas(baseline, current, lambda item: item.query.relation)
 
     def row_score(row: tuple[str, RelationDelta]) -> tuple[int, float]:
         _relation, delta = row
@@ -908,6 +918,39 @@ def relation_deltas(
         or row[1].adjusted_rr != row[1].baseline_rr
     ]
     return sorted(changed, key=row_score, reverse=reverse)
+
+
+def bucket_deltas(
+    baseline: list[RankedQuery],
+    current: list[RankedQuery],
+    bucket_for: Callable[[RankedQuery], str],
+) -> dict[str, RelationDelta]:
+    deltas: dict[str, RelationDelta] = defaultdict(RelationDelta)
+    for before, after in zip(baseline, current):
+        delta = deltas[bucket_for(before)]
+        delta.count += 1
+        delta.baseline_rr += 1.0 / before.rank
+        delta.adjusted_rr += 1.0 / after.rank
+        delta.baseline_hits10 += int(before.rank <= 10)
+        delta.adjusted_hits10 += int(after.rank <= 10)
+        delta.rank_delta += after.rank - before.rank
+        delta.fixed10 += int(before.rank > 10 and after.rank <= 10)
+        delta.lost10 += int(before.rank <= 10 and after.rank > 10)
+    return deltas
+
+
+def print_delta_bucket_rows(deltas: dict[str, RelationDelta], order: list[str]) -> None:
+    for label in order:
+        delta = deltas.get(label)
+        if delta is None:
+            continue
+        print(
+            f"    {label}: n {delta.count} "
+            f"MRR {delta.baseline_rr / delta.count:.3f}->{delta.adjusted_rr / delta.count:.3f} "
+            f"H@10 {delta.baseline_hits10 / delta.count:.3f}->{delta.adjusted_hits10 / delta.count:.3f} "
+            f"mean_rank_delta {delta.rank_delta / delta.count:+.1f} "
+            f"fixed {delta.fixed10} lost {delta.lost10}"
+        )
 
 
 def print_support_delta_details(
