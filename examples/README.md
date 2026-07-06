@@ -154,7 +154,7 @@ python3 scripts/summarize_inductive_predictions.py /tmp/ricci-predictions.txt
 ```
 
 The summary includes full-rank metrics, worst relations, frequent best corrupts,
-and relation-support buckets.
+relation-support buckets, and train-path buckets.
 
 Add `--support-sweep` to test a simple train-relation-support prior over the
 exported scores. It also reports which relations and cases move in or out of

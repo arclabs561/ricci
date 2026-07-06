@@ -130,7 +130,9 @@ def combination(n: int, k: int) -> float:
     return value
 
 
-def print_summary(ranked: list[RankedQuery], predictions: Path, data_dir: Path) -> None:
+def print_summary(
+    graph: Graph, ranked: list[RankedQuery], predictions: Path, data_dir: Path
+) -> None:
     ranks = sorted(item.rank for item in ranked)
     n = len(ranked)
     reciprocal_rank = sum(1.0 / item.rank for item in ranked)
@@ -188,6 +190,7 @@ def print_summary(ranked: list[RankedQuery], predictions: Path, data_dir: Path) 
         print(f"  {entity}: n {count} ({100.0 * count / n:.1f}%)")
 
     print_relation_support_summary(ranked)
+    print_path_summary(graph, ranked)
 
 
 def hits_at(ranked: list[RankedQuery], k: int) -> float:
@@ -285,6 +288,86 @@ def support_comparison_bucket(gold_support: int, corrupt_support: int) -> str:
 
 def print_support_bucket_rows(buckets: dict[str, RelationSummary]) -> None:
     order = ["0", "1", "2-4", "5-9", "10+", "gold-higher", "equal", "corrupt-higher"]
+    for label in order:
+        summary = buckets.get(label)
+        if summary is None:
+            continue
+        print(
+            f"    {label}: n {summary.count} "
+            f"MRR {summary.reciprocal_rank / summary.count:.3f} "
+            f"H@10 {summary.hits10 / summary.count:.3f} "
+            f"mean-rank {summary.rank_sum / summary.count:.1f}"
+        )
+
+
+def print_path_summary(graph: Graph, ranked: list[RankedQuery]) -> None:
+    gold_buckets: dict[str, RelationSummary] = defaultdict(RelationSummary)
+    comparison_buckets: dict[str, RelationSummary] = defaultdict(RelationSummary)
+    for item in ranked:
+        gold_len = path_len(graph, item.query.source, item.query.target)
+        corrupt_len = path_len(graph, item.query.source, item.best_corrupt)
+        add_rank(gold_buckets[path_bucket(gold_len)], item)
+        add_rank(
+            comparison_buckets[path_comparison_bucket(gold_len, corrupt_len)], item
+        )
+
+    print("train-path summary:")
+    print("  full-rank by gold train-path length:")
+    print_path_bucket_rows(gold_buckets)
+    print("  full-rank by gold-vs-best-corrupt train path:")
+    print_path_bucket_rows(comparison_buckets)
+
+
+def path_len(graph: Graph, source: str, target: str) -> int | None:
+    path = graph.path(source, target)
+    if path is None:
+        return None
+    return len(path) - 1
+
+
+def path_bucket(length: int | None) -> str:
+    if length is None:
+        return "none"
+    if length <= 3:
+        return str(length)
+    return "4-5"
+
+
+def path_comparison_bucket(gold_len: int | None, corrupt_len: int | None) -> str:
+    if gold_len is None and corrupt_len is None:
+        return "neither"
+    if gold_len is None:
+        return "only-corrupt"
+    if corrupt_len is None:
+        return "only-gold"
+    if gold_len < corrupt_len:
+        return "gold-shorter"
+    if gold_len > corrupt_len:
+        return "corrupt-shorter"
+    return "equal"
+
+
+def add_rank(summary: RelationSummary, item: RankedQuery) -> None:
+    summary.count += 1
+    summary.reciprocal_rank += 1.0 / item.rank
+    summary.hits10 += int(item.rank <= 10)
+    summary.rank_sum += item.rank
+
+
+def print_path_bucket_rows(buckets: dict[str, RelationSummary]) -> None:
+    order = [
+        "1",
+        "2",
+        "3",
+        "4-5",
+        "none",
+        "gold-shorter",
+        "equal",
+        "corrupt-shorter",
+        "only-gold",
+        "only-corrupt",
+        "neither",
+    ]
     for label in order:
         summary = buckets.get(label)
         if summary is None:
@@ -435,7 +518,7 @@ def main() -> None:
     graph = Graph(args.data_dir)
     queries = parse_predictions(args.predictions)
     ranked = rank_queries(graph, queries)
-    print_summary(ranked, args.predictions, args.data_dir)
+    print_summary(graph, ranked, args.predictions, args.data_dir)
     if args.support_sweep:
         print_support_sweep(graph, queries, ranked)
 
