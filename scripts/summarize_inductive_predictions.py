@@ -53,18 +53,33 @@ class SweepPoint:
     lost10: int
 
 
+@dataclass(frozen=True)
+class EvidenceSweepPoint:
+    label: str
+    support_alpha: float
+    path_alpha: float
+    max_bonus: float | None
+    mrr: float
+    hits10: float
+    median_rank: int
+    fixed10: int
+    lost10: int
+
+
 def rank_queries(
     graph: Graph,
     queries: list[Query],
     support_alpha: float = 0.0,
     path_alpha: float = 0.0,
+    support_requires_path: bool = False,
+    max_bonus: float | None = None,
 ) -> list[RankedQuery]:
     ranked = []
     distance_cache: dict[str, dict[str, int]] = {}
     for query in queries:
         scores = dict(query.predictions)
         distances = None
-        if path_alpha != 0.0:
+        if path_alpha != 0.0 or support_requires_path:
             distances = distances_from_source(graph, distance_cache, query.source)
         gold_score = adjusted_score(
             graph,
@@ -74,6 +89,8 @@ def rank_queries(
             support_alpha,
             path_alpha,
             distances,
+            support_requires_path,
+            max_bonus,
         )
         filtered = graph.known[(query.source, query.relation)]
 
@@ -92,6 +109,8 @@ def rank_queries(
                 support_alpha,
                 path_alpha,
                 distances,
+                support_requires_path,
+                max_bonus,
             )
             candidate_count += 1
             if score > gold_score:
@@ -125,13 +144,18 @@ def adjusted_score(
     support_alpha: float,
     path_alpha: float,
     distances: dict[str, int] | None,
+    support_requires_path: bool,
+    max_bonus: float | None,
 ) -> float:
-    if support_alpha != 0.0:
-        score += support_alpha * math.log1p(graph.relation_support(relation, entity))
-    if path_alpha != 0.0 and distances is not None:
-        distance = distances.get(entity)
-        if distance is not None:
-            score += path_alpha / (1.0 + distance)
+    distance = distances.get(entity) if distances is not None else None
+    bonus = 0.0
+    if support_alpha != 0.0 and (not support_requires_path or distance is not None):
+        bonus += support_alpha * math.log1p(graph.relation_support(relation, entity))
+    if path_alpha != 0.0 and distance is not None:
+        bonus += path_alpha / (1.0 + distance)
+    if max_bonus is not None:
+        bonus = min(bonus, max_bonus)
+    score += bonus
     return score
 
 
@@ -574,6 +598,133 @@ def print_evidence_sweep(
         )
 
 
+def print_gated_evidence_sweep(
+    graph: Graph, queries: list[Query], baseline: list[RankedQuery]
+) -> None:
+    print("gated evidence calibration sweep:")
+    print(
+        "  support-gated rows add relation support only when the candidate is "
+        "reachable from the query source within five train hops"
+    )
+    print("  capped rows clamp the total evidence bonus before adding it to the score")
+    print(
+        "  mode          support  path   cap    MRR    H@10  median  fixed@10  lost@10"
+    )
+
+    baseline_hits = [item.rank <= 10 for item in baseline]
+    points: list[EvidenceSweepPoint] = []
+
+    for path_alpha in [0.5, 1.0, 1.5]:
+        points.append(
+            evidence_sweep_point(
+                graph,
+                queries,
+                baseline_hits,
+                label="path",
+                support_alpha=0.0,
+                path_alpha=path_alpha,
+                max_bonus=None,
+                support_requires_path=False,
+            )
+        )
+
+    for support_alpha in [0.2, 0.4, 0.6]:
+        for path_alpha in [0.5, 1.0, 1.5]:
+            points.append(
+                evidence_sweep_point(
+                    graph,
+                    queries,
+                    baseline_hits,
+                    label="gated",
+                    support_alpha=support_alpha,
+                    path_alpha=path_alpha,
+                    max_bonus=None,
+                    support_requires_path=True,
+                )
+            )
+            for max_bonus in [0.5, 1.0, 1.5]:
+                points.append(
+                    evidence_sweep_point(
+                        graph,
+                        queries,
+                        baseline_hits,
+                        label="gated+cap",
+                        support_alpha=support_alpha,
+                        path_alpha=path_alpha,
+                        max_bonus=max_bonus,
+                        support_requires_path=True,
+                    )
+                )
+
+    for point in points:
+        cap = "-" if point.max_bonus is None else f"{point.max_bonus:.1f}"
+        print(
+            f"  {point.label:<12}  {point.support_alpha:>4.1f}  "
+            f"{point.path_alpha:>4.1f}  {cap:>4}  {point.mrr:.4f}  "
+            f"{point.hits10:.4f}  {point.median_rank:>6}  "
+            f"{point.fixed10:>8}  {point.lost10:>7}"
+        )
+
+    best_mrr = max(points, key=lambda point: (point.mrr, point.hits10))
+    best_hits10 = max(points, key=lambda point: (point.hits10, point.mrr))
+    print_evidence_point("best MRR", best_mrr)
+    if best_hits10 != best_mrr:
+        print_evidence_point("best H@10", best_hits10)
+
+    low_loss = [point for point in points if point.lost10 <= 5]
+    if low_loss:
+        print("  best low-loss settings (lost@10 <= 5):")
+        for point in sorted(low_loss, key=lambda p: (p.mrr, p.hits10), reverse=True)[
+            :6
+        ]:
+            print_evidence_point("  candidate", point)
+
+
+def evidence_sweep_point(
+    graph: Graph,
+    queries: list[Query],
+    baseline_hits: list[bool],
+    label: str,
+    support_alpha: float,
+    path_alpha: float,
+    max_bonus: float | None,
+    support_requires_path: bool,
+) -> EvidenceSweepPoint:
+    ranked = rank_queries(
+        graph,
+        queries,
+        support_alpha=support_alpha,
+        path_alpha=path_alpha,
+        support_requires_path=support_requires_path,
+        max_bonus=max_bonus,
+    )
+    ranks = sorted(item.rank for item in ranked)
+    hits = [item.rank <= 10 for item in ranked]
+    fixed = sum(1 for before, after in zip(baseline_hits, hits) if not before and after)
+    lost = sum(1 for before, after in zip(baseline_hits, hits) if before and not after)
+    return EvidenceSweepPoint(
+        label=label,
+        support_alpha=support_alpha,
+        path_alpha=path_alpha,
+        max_bonus=max_bonus,
+        mrr=mean_reciprocal_rank(ranked),
+        hits10=hits_at(ranked, 10),
+        median_rank=ranks[len(ranks) // 2],
+        fixed10=fixed,
+        lost10=lost,
+    )
+
+
+def print_evidence_point(label: str, point: EvidenceSweepPoint) -> None:
+    cap = "-" if point.max_bonus is None else f"{point.max_bonus:.1f}"
+    print(
+        f"  {label}: mode {point.label} support {point.support_alpha:.1f} "
+        f"path {point.path_alpha:.1f} cap {cap} MRR {point.mrr:.4f} "
+        f"H@10 {point.hits10:.4f} median {point.median_rank} "
+        f"fixed@10 {point.fixed10} lost@10 {point.lost10}"
+    )
+
+
 def print_comparison(
     baseline_path: Path,
     baseline: list[RankedQuery],
@@ -822,6 +973,11 @@ def main() -> None:
         help="Also sweep a diagnostic relation-support plus train-path calibration.",
     )
     parser.add_argument(
+        "--gated-evidence-sweep",
+        action="store_true",
+        help="Also sweep path-gated and capped evidence calibrations.",
+    )
+    parser.add_argument(
         "--compare-to",
         type=Path,
         help="Compare this export against another export from the same query set.",
@@ -842,6 +998,8 @@ def main() -> None:
         print_support_sweep(graph, queries, ranked)
     if args.evidence_sweep:
         print_evidence_sweep(graph, queries, ranked)
+    if args.gated_evidence_sweep:
+        print_gated_evidence_sweep(graph, queries, ranked)
 
 
 if __name__ == "__main__":

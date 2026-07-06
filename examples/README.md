@@ -169,6 +169,8 @@ exported scores. It also reports which relations and cases move in or out of
 Hits@10. This is a diagnostic, not the evaluation protocol.
 Add `--evidence-sweep` to test relation support plus train-path strength over
 the exported scores. This is also a diagnostic, not the evaluation protocol.
+Add `--gated-evidence-sweep` to test path-gated and capped variants that avoid
+giving every supported candidate the same global boost.
 Use `--compare-to /tmp/baseline-predictions.txt` to compare two exports from
 the same query set.
 
