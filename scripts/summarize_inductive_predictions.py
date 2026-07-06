@@ -574,6 +574,147 @@ def print_evidence_sweep(
         )
 
 
+def print_comparison(
+    baseline_path: Path,
+    baseline: list[RankedQuery],
+    current_path: Path,
+    current: list[RankedQuery],
+) -> None:
+    validate_same_queries(baseline, current, baseline_path, current_path)
+    baseline_ranks = sorted(item.rank for item in baseline)
+    current_ranks = sorted(item.rank for item in current)
+    fixed10 = sum(
+        1 for before, after in zip(baseline, current) if before.rank > 10 >= after.rank
+    )
+    lost10 = sum(
+        1 for before, after in zip(baseline, current) if before.rank <= 10 < after.rank
+    )
+    improved = sum(
+        1 for before, after in zip(baseline, current) if after.rank < before.rank
+    )
+    worsened = sum(
+        1 for before, after in zip(baseline, current) if after.rank > before.rank
+    )
+    unchanged = len(current) - improved - worsened
+    print("prediction comparison:")
+    print(f"  baseline: {baseline_path}")
+    print(f"  current:  {current_path}")
+    print(
+        "  full-ranking filtered: "
+        f"MRR {mean_reciprocal_rank(baseline):.4f}->{mean_reciprocal_rank(current):.4f} "
+        f"H@10 {hits_at(baseline, 10):.4f}->{hits_at(current, 10):.4f} "
+        f"median {baseline_ranks[len(baseline_ranks) // 2]}->{current_ranks[len(current_ranks) // 2]}"
+    )
+    print(
+        f"  rank moves: improved {improved} worsened {worsened} "
+        f"unchanged {unchanged} fixed@10 {fixed10} lost@10 {lost10}"
+    )
+    print("  most helped relations:")
+    print_relation_delta_rows(relation_deltas(baseline, current)[:6])
+    print("  most hurt relations:")
+    print_relation_delta_rows(relation_deltas(baseline, current, reverse=False)[:6])
+    print("  largest fixed@10 cases:")
+    fixed = [
+        (before, after)
+        for before, after in zip(baseline, current)
+        if before.rank > 10 and after.rank <= 10
+    ]
+    print_case_moves(
+        sorted(fixed, key=lambda pair: pair[0].rank - pair[1].rank, reverse=True)[:5]
+    )
+    print("  largest lost@10 cases:")
+    lost = [
+        (before, after)
+        for before, after in zip(baseline, current)
+        if before.rank <= 10 and after.rank > 10
+    ]
+    print_case_moves(
+        sorted(lost, key=lambda pair: pair[1].rank - pair[0].rank, reverse=True)[:5]
+    )
+    print("  largest rank improvements:")
+    improved_pairs = [
+        (before, after)
+        for before, after in zip(baseline, current)
+        if after.rank < before.rank
+    ]
+    print_case_moves(
+        sorted(
+            improved_pairs,
+            key=lambda pair: pair[0].rank - pair[1].rank,
+            reverse=True,
+        )[:5]
+    )
+    print("  largest rank regressions:")
+    regressed_pairs = [
+        (before, after)
+        for before, after in zip(baseline, current)
+        if after.rank > before.rank
+    ]
+    print_case_moves(
+        sorted(
+            regressed_pairs,
+            key=lambda pair: pair[1].rank - pair[0].rank,
+            reverse=True,
+        )[:5]
+    )
+
+
+def validate_same_queries(
+    baseline: list[RankedQuery],
+    current: list[RankedQuery],
+    baseline_path: Path,
+    current_path: Path,
+) -> None:
+    if len(baseline) != len(current):
+        raise SystemExit(
+            f"cannot compare {baseline_path} and {current_path}: query counts differ "
+            f"({len(baseline)} vs {len(current)})"
+        )
+    for index, (before, after) in enumerate(zip(baseline, current), 1):
+        if query_key(before.query) != query_key(after.query):
+            raise SystemExit(
+                f"cannot compare {baseline_path} and {current_path}: "
+                f"query {index} differs"
+            )
+
+
+def query_key(query: Query) -> tuple[str, str, str, str]:
+    return (query.raw_head, query.raw_relation, query.raw_tail, query.direction)
+
+
+def relation_deltas(
+    baseline: list[RankedQuery], current: list[RankedQuery], reverse: bool = True
+) -> list[tuple[str, RelationDelta]]:
+    deltas: dict[str, RelationDelta] = defaultdict(RelationDelta)
+    for before, after in zip(baseline, current):
+        delta = deltas[before.query.relation]
+        delta.count += 1
+        delta.baseline_rr += 1.0 / before.rank
+        delta.adjusted_rr += 1.0 / after.rank
+        delta.baseline_hits10 += int(before.rank <= 10)
+        delta.adjusted_hits10 += int(after.rank <= 10)
+        delta.rank_delta += after.rank - before.rank
+        delta.fixed10 += int(before.rank > 10 and after.rank <= 10)
+        delta.lost10 += int(before.rank <= 10 and after.rank > 10)
+
+    def row_score(row: tuple[str, RelationDelta]) -> tuple[int, float]:
+        _relation, delta = row
+        return (
+            delta.fixed10 - delta.lost10,
+            (delta.adjusted_rr - delta.baseline_rr) / delta.count,
+        )
+
+    changed = [
+        row
+        for row in deltas.items()
+        if row[1].fixed10
+        or row[1].lost10
+        or row[1].rank_delta
+        or row[1].adjusted_rr != row[1].baseline_rr
+    ]
+    return sorted(changed, key=row_score, reverse=reverse)
+
+
 def print_support_delta_details(
     baseline: list[RankedQuery], point: SweepPoint, label: str
 ) -> None:
@@ -623,6 +764,9 @@ def print_support_delta_details(
 
 
 def print_relation_delta_rows(rows: list[tuple[str, RelationDelta]]) -> None:
+    if not rows:
+        print("    <none>")
+        return
     for relation, delta in rows:
         h10_before = delta.baseline_hits10 / delta.count
         h10_after = delta.adjusted_hits10 / delta.count
@@ -677,12 +821,21 @@ def main() -> None:
         action="store_true",
         help="Also sweep a diagnostic relation-support plus train-path calibration.",
     )
+    parser.add_argument(
+        "--compare-to",
+        type=Path,
+        help="Compare this export against another export from the same query set.",
+    )
     args = parser.parse_args()
 
     graph = Graph(args.data_dir)
     queries = parse_predictions(args.predictions)
     ranked = rank_queries(graph, queries)
     print_summary(graph, ranked, args.predictions, args.data_dir)
+    if args.compare_to:
+        baseline_queries = parse_predictions(args.compare_to)
+        baseline_ranked = rank_queries(graph, baseline_queries)
+        print_comparison(args.compare_to, baseline_ranked, args.predictions, ranked)
     if args.path_patterns:
         print_path_patterns(graph, ranked)
     if args.support_sweep:
