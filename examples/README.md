@@ -138,6 +138,12 @@ scripts/run_inductiveeval.sh /tmp/ricci-predictions.txt
 The setup script pins the external evaluator revision and Python dependency
 versions under `target/inductiveeval`.
 
+Inspect concrete ranking failures:
+
+```bash
+python3 scripts/inspect_inductive_predictions.py /tmp/ricci-predictions.txt
+```
+
 ```text
 selected epoch 1 (valid MRR 0.3438)
 full rank: mean 120.9  median 9  p90 358  p95 899  p99 1070  max 1080 (of 1093 entities)
