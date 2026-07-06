@@ -59,6 +59,7 @@ class EvidenceSweepPoint:
     support_alpha: float
     path_alpha: float
     max_bonus: float | None
+    ranked: list[RankedQuery]
     mrr: float
     hits10: float
     median_rank: int
@@ -674,10 +675,10 @@ def print_gated_evidence_sweep(
     low_loss = [point for point in points if point.lost10 <= 5]
     if low_loss:
         print("  best low-loss settings (lost@10 <= 5):")
-        for point in sorted(low_loss, key=lambda p: (p.mrr, p.hits10), reverse=True)[
-            :6
-        ]:
+        low_loss = sorted(low_loss, key=lambda p: (p.mrr, p.hits10), reverse=True)
+        for point in low_loss[:6]:
             print_evidence_point("  candidate", point)
+        print_evidence_delta_details(baseline, low_loss[0], "best low-loss")
 
 
 def evidence_sweep_point(
@@ -707,6 +708,7 @@ def evidence_sweep_point(
         support_alpha=support_alpha,
         path_alpha=path_alpha,
         max_bonus=max_bonus,
+        ranked=ranked,
         mrr=mean_reciprocal_rank(ranked),
         hits10=hits_at(ranked, 10),
         median_rank=ranks[len(ranks) // 2],
@@ -722,6 +724,48 @@ def print_evidence_point(label: str, point: EvidenceSweepPoint) -> None:
         f"path {point.path_alpha:.1f} cap {cap} MRR {point.mrr:.4f} "
         f"H@10 {point.hits10:.4f} median {point.median_rank} "
         f"fixed@10 {point.fixed10} lost@10 {point.lost10}"
+    )
+
+
+def print_evidence_delta_details(
+    baseline: list[RankedQuery], point: EvidenceSweepPoint, label: str
+) -> None:
+    print_evidence_point(f"gated evidence deltas ({label})", point)
+    print("  most helped relations:")
+    print_relation_delta_rows(relation_deltas(baseline, point.ranked)[:6])
+    print("  most hurt relations:")
+    print_relation_delta_rows(
+        relation_deltas(baseline, point.ranked, reverse=False)[:6]
+    )
+
+    fixed = [
+        (before, after)
+        for before, after in zip(baseline, point.ranked)
+        if before.rank > 10 and after.rank <= 10
+    ]
+    lost = [
+        (before, after)
+        for before, after in zip(baseline, point.ranked)
+        if before.rank <= 10 and after.rank > 10
+    ]
+    regressed = [
+        (before, after)
+        for before, after in zip(baseline, point.ranked)
+        if after.rank > before.rank
+    ]
+    print("  largest fixed@10 cases:")
+    print_case_moves(
+        sorted(fixed, key=lambda pair: pair[0].rank - pair[1].rank, reverse=True)[:5]
+    )
+    print("  largest lost@10 cases:")
+    print_case_moves(
+        sorted(lost, key=lambda pair: pair[1].rank - pair[0].rank, reverse=True)[:5]
+    )
+    print("  largest rank regressions:")
+    print_case_moves(
+        sorted(regressed, key=lambda pair: pair[1].rank - pair[0].rank, reverse=True)[
+            :5
+        ]
     )
 
 
