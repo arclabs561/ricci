@@ -32,8 +32,8 @@ static SCATTER_GATHER_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime counters for the exact segment max/min host fallback.
 ///
-/// `scatter_max_min` is exact and differentiable through `gather`, but today
-/// it snapshots edge messages to the host to choose max/min winners. These
+/// The backend-agnostic fallback is exact and differentiable through `gather`,
+/// but it snapshots edge messages to the host to choose max/min winners. These
 /// counters make that cost visible in examples and training harnesses.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ScatterMetrics {

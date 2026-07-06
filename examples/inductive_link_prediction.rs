@@ -20,12 +20,12 @@
 //! Observed on this harness with strict candidate-level `remove_one_hop`:
 //! `AGG=pna EPOCHS=8 --features wgpu` reaches 0.817 50-negative Hits@10,
 //! close to NBFNet's 0.834 and above GraIL's 0.642; full-rank Hits@10 is
-//! 0.368, MRR 0.201. PNA is slower than sum here because the exact
-//! max/min workaround snapshots edge messages to the host. One negative
-//! finding worth keeping: selecting the checkpoint by validation MRR on
-//! the TRAINING graph (the reference protocol) tracks in-distribution
-//! quality, not cross-graph transfer, and can pick a worse-transferring
-//! epoch.
+//! 0.368, MRR 0.201. PNA is slower than sum; on WGPU/Metal the exact
+//! max/min winners are computed on device, while the CPU/reference path still
+//! uses the host fallback. One negative finding worth keeping: selecting the
+//! checkpoint by validation MRR on the TRAINING graph (the reference protocol)
+//! tracks in-distribution quality, not cross-graph transfer, and can pick a
+//! worse-transferring epoch.
 //!
 //! Data-gated: run `scripts/fetch_grail_fb237v1.sh` first; without data
 //! this prints instructions and exits 0.
