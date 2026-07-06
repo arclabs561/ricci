@@ -703,6 +703,10 @@ fn main() {
         out.hits50_1, out.hits50_3, out.hits50_10
     );
     eprintln!(
+        "estimated-50 Hits@10 (TorchDrug h@10_50): {:.3}",
+        out.hits50_estimate_10
+    );
+    eprintln!(
         "sampled-50 rank: mean {:.1}  median {}  p90 {}  max 51",
         out.mean_rank50, out.median50, out.p90_50
     );
@@ -802,6 +806,7 @@ struct EvalOut {
     hits50_1: f64,
     hits50_3: f64,
     hits50_10: f64,
+    hits50_estimate_10: f64,
     mean_rank50: f64,
     median50: usize,
     p90_50: usize,
@@ -868,6 +873,7 @@ fn evaluate(
     let mut mrr = 0.0f64;
     let mut hits_full = [0.0f64; 4]; // @1, @3, @10, @50
     let mut hits50 = [0.0f64; 3]; // @1, @3, @10
+    let mut hits50_estimate_10 = 0.0f64;
     let mut ranks: Vec<usize> = Vec::new();
     let mut sample_ranks: Vec<usize> = Vec::new();
     let mut margins: Vec<f64> = Vec::new();
@@ -910,10 +916,12 @@ fn evaluate(
             let gold = row[t];
             let filt = known.get(&(s, r));
             let mut rank_full = 1usize;
+            let mut candidate_count = 0usize;
             let mut best_corrupt = f32::NEG_INFINITY;
             let mut best_corrupt_entity = t;
             for (e, &sc) in row.iter().enumerate() {
                 if e != t && filt.is_none_or(|set| !set.contains(&e)) {
+                    candidate_count += 1;
                     if sc > gold {
                         rank_full += 1;
                     }
@@ -940,6 +948,7 @@ fn evaluate(
             mrr += 1.0 / rank_full as f64;
             ranks.push(rank_full);
             margins.push((gold - best_corrupt) as f64);
+            hits50_estimate_10 += estimated_hits_at_k(rank_full, candidate_count, 10, 50);
             // 50 sampled filtered negatives (GraIL protocol).
             let mut better = 0usize;
             let mut drawn = 0usize;
@@ -1001,6 +1010,7 @@ fn evaluate(
         hits50_1: hits50[0] / n,
         hits50_3: hits50[1] / n,
         hits50_10: hits50[2] / n,
+        hits50_estimate_10: hits50_estimate_10 / n,
         mean_rank50: sample_ranks.iter().sum::<usize>() as f64 / n,
         median50: sample_ranks[sample_ranks.len() / 2],
         p90_50: sample_ranks[sample_ranks.len() * 9 / 10],
@@ -1274,6 +1284,28 @@ fn jaccard(a: &HashSet<usize>, b: &HashSet<usize>) -> f64 {
         return 0.0;
     }
     a.intersection(b).count() as f64 / union as f64
+}
+
+fn estimated_hits_at_k(rank: usize, candidate_count: usize, k: usize, samples: usize) -> f64 {
+    if candidate_count == 0 {
+        return 1.0;
+    }
+    let fp_rate = (rank.saturating_sub(1) as f64 / candidate_count as f64).clamp(0.0, 1.0);
+    let mut score = 0.0;
+    for false_positives in 0..k {
+        score += combination(samples, false_positives)
+            * fp_rate.powi(false_positives as i32)
+            * (1.0 - fp_rate).powi((samples - false_positives) as i32);
+    }
+    score
+}
+
+fn combination(n: usize, k: usize) -> f64 {
+    if k > n {
+        return 0.0;
+    }
+    let k = k.min(n - k);
+    (0..k).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
 }
 
 fn relation_name(relation: usize, rel_names: &[String]) -> String {
