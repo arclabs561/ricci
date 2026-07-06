@@ -124,6 +124,19 @@ per-epoch `snapshot`, `scan`, and `gather` costs.
 Set `TRANSFER_VALID=1` to print inductive-validation MRR during training, or
 `SELECT=transfer` to select checkpoints by that diagnostic instead of the
 reference train-graph validation.
+Set `NEGATIVE_MODE=signature` to sample training negatives that share at least
+one observed relation signature with the gold entity. The default is the
+reference uniform strict-negative sampler.
+
+External sampled, type-matched, and all-entity metrics:
+
+```bash
+scripts/setup_inductiveeval.sh
+scripts/run_inductiveeval.sh /tmp/ricci-predictions.txt
+```
+
+The setup script pins the external evaluator revision and Python dependency
+versions under `target/inductiveeval`.
 
 ```text
 selected epoch 1 (valid MRR 0.3438)

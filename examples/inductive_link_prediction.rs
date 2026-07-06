@@ -111,6 +111,7 @@ const LAYERS: usize = 6;
 const EPOCHS: usize = 20; // override with EPOCHS=n (PNA mode is ~15x costlier per epoch on CPU)
 const DEFAULT_BATCH: usize = 32;
 const NEGATIVES: usize = 32;
+const SIGNATURE_RETRY_LIMIT: usize = 64;
 const LR: f64 = 5e-3;
 const ADV_TEMPERATURE: f32 = 0.5;
 
@@ -372,15 +373,17 @@ fn main() {
     let select_transfer = std::env::var("SELECT").is_ok_and(|v| v == "transfer");
     let report_transfer =
         select_transfer || std::env::var("TRANSFER_VALID").is_ok_and(|v| v != "0");
+    let negative_mode = NegativeMode::from_env();
     eprintln!(
-        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}",
+        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}  negatives: {}",
         if pna { "pna" } else { "sum" },
         backend_name(),
         if select_transfer {
             "transfer-valid"
         } else {
             "train-valid"
-        }
+        },
+        negative_mode.as_str()
     );
     reset_scatter_metrics();
     let mut model = init_model::<TB>(n_rel2, pna, &device);
@@ -397,6 +400,14 @@ fn main() {
         queries.push((t, r + rel_names.len(), h));
     }
     let known = train_g.known_tails();
+    let train_signatures = train_g.entity_signatures(n_train_ent);
+    let signature_negative_pools = signature_negative_pools(&train_signatures);
+    let negative_sampler = NegativeSampler {
+        n_ent: n_train_ent,
+        mode: negative_mode,
+        signatures: &train_signatures,
+        signature_pools: &signature_negative_pools,
+    };
 
     // Validation queries on the training graph (both directions), capped at
     // a fixed deterministic subsample to keep the per-check cost bounded.
@@ -449,10 +460,11 @@ fn main() {
         let mut first_state_abs = 0.0_f32; // mean |state| on the first batch: explosion/collapse probe
         let mut drop_pairs_total = 0usize;
         let mut dropped_edges_total = 0usize;
+        let mut negative_stats = NegativeStats::default();
         let mut first_score_probe: Option<(f64, f64, f64)> = None;
         for chunk in order.chunks(batch_size) {
             let batch: Vec<_> = chunk.iter().map(|&i| queries[i]).collect();
-            // Candidates: positive tail + uniform negatives. Sample these
+            // Candidates: positive tail + strict negatives. Sample these
             // before building the message graph: reference `remove_one_hop`
             // removes edges between the source and every candidate, not only
             // the positive tail.
@@ -460,18 +472,7 @@ fn main() {
             let cands: Vec<Vec<usize>> = batch
                 .iter()
                 .map(|&(s, r, t)| {
-                    let mut row = vec![t];
-                    let kt = known.get(&(s, r));
-                    while row.len() < 1 + NEGATIVES {
-                        state2 = state2
-                            .wrapping_mul(6364136223846793005)
-                            .wrapping_add(1442695040888963407);
-                        let cand = (state2 >> 16) as usize % n_train_ent;
-                        if cand != t && kt.is_none_or(|set| !set.contains(&cand)) {
-                            row.push(cand);
-                        }
-                    }
-                    row
+                    negative_sampler.sample(known.get(&(s, r)), t, &mut state2, &mut negative_stats)
                 })
                 .collect();
             // Drop ALL edges between each query pair from the message graph
@@ -559,6 +560,14 @@ fn main() {
             eprint!(
                 "  first scores pos {:.3} neg {:.3} hard-pos {:.3}",
                 pos, neg, hard
+            );
+        }
+        if negative_stats.total > 0 {
+            eprint!(
+                "  neg sig-share {:.1}% pool {:.1}% reject/neg {:.2}",
+                negative_stats.signature_share_pct(),
+                negative_stats.pool_pct(),
+                negative_stats.rejects_per_negative()
             );
         }
         if pna {
@@ -1259,6 +1268,139 @@ fn opt_usize(value: Option<usize>) -> String {
 
 fn env_usize(name: &str) -> Option<usize> {
     std::env::var(name).ok()?.parse().ok()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NegativeMode {
+    Uniform,
+    Signature,
+}
+
+impl NegativeMode {
+    fn from_env() -> Self {
+        match std::env::var("NEGATIVE_MODE").as_deref() {
+            Ok("signature") => Self::Signature,
+            _ => Self::Uniform,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Uniform => "uniform",
+            Self::Signature => "signature",
+        }
+    }
+}
+
+#[derive(Default)]
+struct NegativeStats {
+    total: usize,
+    signature_shared: usize,
+    pool_drawn: usize,
+    rejected: usize,
+}
+
+impl NegativeStats {
+    fn signature_share_pct(&self) -> f64 {
+        100.0 * self.signature_shared as f64 / self.total.max(1) as f64
+    }
+
+    fn pool_pct(&self) -> f64 {
+        100.0 * self.pool_drawn as f64 / self.total.max(1) as f64
+    }
+
+    fn rejects_per_negative(&self) -> f64 {
+        self.rejected as f64 / self.total.max(1) as f64
+    }
+}
+
+struct NegativeSampler<'a> {
+    n_ent: usize,
+    mode: NegativeMode,
+    signatures: &'a [HashSet<usize>],
+    signature_pools: &'a [Vec<usize>],
+}
+
+impl NegativeSampler<'_> {
+    fn sample(
+        &self,
+        known_tails: Option<&HashSet<usize>>,
+        target: usize,
+        state: &mut u64,
+        stats: &mut NegativeStats,
+    ) -> Vec<usize> {
+        let mut row = vec![target];
+        while row.len() < 1 + NEGATIVES {
+            let mut rejected_for_slot = 0usize;
+            let (cand, from_pool) = loop {
+                let use_signature = self.mode == NegativeMode::Signature
+                    && rejected_for_slot < SIGNATURE_RETRY_LIMIT;
+                let (cand, from_pool) = if use_signature {
+                    draw_signature_candidate(self.signature_pools, target, state)
+                        .unwrap_or_else(|| (draw_uniform(self.n_ent, state), false))
+                } else {
+                    (draw_uniform(self.n_ent, state), false)
+                };
+                if cand == target || known_tails.is_some_and(|set| set.contains(&cand)) {
+                    stats.rejected += 1;
+                    rejected_for_slot += 1;
+                    continue;
+                }
+                break (cand, from_pool);
+            };
+            stats.total += 1;
+            stats.pool_drawn += usize::from(from_pool);
+            stats.signature_shared += usize::from(signatures_share(self.signatures, target, cand));
+            row.push(cand);
+        }
+        row
+    }
+}
+
+fn draw_uniform(n_ent: usize, state: &mut u64) -> usize {
+    *state = state
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (*state >> 16) as usize % n_ent
+}
+
+fn draw_signature_candidate(
+    signature_pools: &[Vec<usize>],
+    target: usize,
+    state: &mut u64,
+) -> Option<(usize, bool)> {
+    let pool = signature_pools.get(target)?;
+    if pool.is_empty() {
+        return None;
+    }
+    let idx = draw_uniform(pool.len(), state);
+    Some((pool[idx], true))
+}
+
+fn signature_negative_pools(signatures: &[HashSet<usize>]) -> Vec<Vec<usize>> {
+    signatures
+        .iter()
+        .enumerate()
+        .map(|(target, _)| {
+            (0..signatures.len())
+                .filter(|&cand| cand != target && signatures_share(signatures, target, cand))
+                .collect()
+        })
+        .collect()
+}
+
+fn signatures_share(signatures: &[HashSet<usize>], a: usize, b: usize) -> bool {
+    let Some(sa) = signatures.get(a) else {
+        return false;
+    };
+    let Some(sb) = signatures.get(b) else {
+        return false;
+    };
+    if sa.len() <= sb.len() {
+        sa.iter().any(|rel| sb.contains(rel))
+    } else {
+        sb.iter().any(|rel| sa.contains(rel))
+    }
 }
 
 struct Graph {
