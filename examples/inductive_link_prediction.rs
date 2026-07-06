@@ -14,20 +14,17 @@
 //! the stricter full-entity ranking metrics, which the 50-negative number
 //! overestimates (Galkin et al., ICLR 2024, Fig. 4). Hyperparameters and
 //! training protocol follow NBFNet's config/inductive/fb15k237.yaml and
-//! script/run.py, with one deliberate divergence: sum aggregation instead
-//! of PNA, because burn 0.20 scatters support only Add (no scatter-max /
-//! min for PNA's statistics). The paper's own ablation puts DistMult+sum
-//! at MRR 0.388 vs PNA 0.415 on transductive FB15k-237.
+//! script/run.py. The default is fast sum aggregation; `AGG=pna` switches
+//! to exact PNA aggregation via ricci's segment max/min helpers.
 //!
-//! Observed on this harness (ndarray CPU, ~35 min): 50-negative Hits@10
-//! in the 0.52-0.59 range across protocol-faithful variants (n = 410
-//! queries, so the 95% CI is about +/- 0.05); far above the ~0.196
-//! random floor of the 50-negative protocol, below the PNA-equipped
-//! references. Transfer to unseen entities genuinely happens; parity
-//! with the published aggregator does not. One negative finding worth
-//! keeping: selecting the checkpoint by validation MRR on the TRAINING
-//! graph (the reference protocol) tracks in-distribution quality, not
-//! cross-graph transfer, and can pick a worse-transferring epoch.
+//! Observed on this harness: default sum variants land in the 0.52-0.59
+//! 50-negative Hits@10 range; `AGG=pna EPOCHS=8` reaches 0.637, essentially
+//! matching GraIL's 0.642 while still below NBFNet's 0.834. Transfer to
+//! unseen entities genuinely happens (random floor is about 0.196). One
+//! negative finding worth keeping: selecting the checkpoint by validation
+//! MRR on the TRAINING graph (the reference protocol) tracks
+//! in-distribution quality, not cross-graph transfer, and can pick a
+//! worse-transferring epoch.
 //!
 //! Data-gated: run `scripts/fetch_grail_fb237v1.sh` first; without data
 //! this prints instructions and exits 0.

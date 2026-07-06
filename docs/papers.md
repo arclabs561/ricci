@@ -138,7 +138,7 @@ boundary condition re-added each layer. The semiring instances the paper
 generalizes are the same algebra family heyting evaluates exactly. The
 `inductive_link_prediction` example trains an NBFNet-shaped model on the
 GraIL FB15k-237 v1 inductive split end to end (see examples/README.md for
-the honest numbers vs the paper's PNA-equipped 0.834).
+the measured numbers, including exact-PNA mode, vs the paper's 0.834).
 
 ### Towards foundation models for knowledge graph reasoning (Galkin, Yuan, Mostafa, Tang, Zhu, ICLR 2024)
 

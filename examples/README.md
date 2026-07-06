@@ -85,30 +85,33 @@ Trains an NBFNet-shaped model (Zhu et al., NeurIPS 2021) from `NBFConv`'s
 edge-list forward on the GraIL FB15k-237 v1 split, then evaluates on a
 disjoint graph whose entities were never seen in training. Nothing
 entity-specific is learned, so the trained model runs unchanged on the new
-vocabulary. Data-gated: fetch first, then run (about 35 minutes on CPU).
+vocabulary. Data-gated: fetch first, then run. Default sum aggregation takes
+about 35 minutes on CPU; exact PNA mode is slower.
 
 ```bash
 scripts/fetch_grail_fb237v1.sh
 cargo run --release --example inductive_link_prediction
 ```
 
+Reference-shaped PNA mode:
+
+```bash
+AGG=pna EPOCHS=8 cargo run --release --example inductive_link_prediction
+```
+
 ```text
 fb237_v1: 1594 entities, 180 relations (360 with inverses), 4245 train triples; inductive graph: 1093 entities, 1993 observed / 205 test triples
-epoch 13: loss 0.2789  |h| 1.611  valid MRR 0.3017
-selected epoch 13 (valid MRR 0.3017)
+aggregation: pna  epochs: 8
 fb237_v1 -> fb237_v1_ind (both directions, n = 410):
-Hits@10 (50 filtered negatives, GraIL protocol): 0.520
-full-ranking filtered Hits@10: 0.234   MRR: 0.129
+Hits@10 (50 filtered negatives, GraIL protocol): 0.637
+full-ranking filtered Hits@10: 0.298   MRR: 0.177
 references on this split: GraIL 0.642, NBFNet 0.834 (50-neg protocol)
 ```
 
 Transfer genuinely happens (the 50-negative random floor is about 0.196;
-protocol-faithful variants of this harness land in the 0.52-0.59 range, a
-band whose width matches the +/- 0.05 CI of 410 test queries). Parity with
-the references does not: both use PNA aggregation, whose max/min statistics
-need scatter ops burn 0.20 does not have, and the NBFNet paper's own
-ablation puts the sum aggregator used here at MRR 0.388 vs PNA's 0.415
-transductively. The example's doc comment records the full protocol
+sum-aggregation variants of this harness land in the 0.52-0.59 range, and
+PNA closes most of the remaining gap to GraIL. NBFNet's published 0.834 is
+still not reached. The example's doc comment records the full protocol
 provenance and one negative finding about validation-based checkpoint
 selection under distribution shift.
 

@@ -62,6 +62,7 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::relgraph`: the graph of relations (four interaction-type
   adjacencies over relation nodes, inverses included).
   All conv layers derive Burn's `Module`, so they embed in trainable models.
+- `ricci::scatter`: exact segment max/min helpers for edge-list aggregation.
 - `ricci::curvature`: Ollivier-Ricci edge curvature over an adjacency matrix
   (lazy-walk `alpha`, entropic `W1`).
 - `ricci::features`: homomorphism-count node features (walk and closed-walk

@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- `scatter::{scatter_max, scatter_min, scatter_max_min}`: exact segment
+  max/min helpers over edge lists. These compute winner indices from a host
+  snapshot, then use differentiable gathers so gradients route to the
+  winning edge values.
+- `examples/inductive_link_prediction` accepts `AGG=pna`, using the new
+  scatter helpers for exact PNA aggregation. On GraIL FB15k-237 v1 with
+  `EPOCHS=8`, the 50-negative Hits@10 reached 0.637, essentially matching
+  GraIL's 0.642 on the same protocol while still below NBFNet's 0.834.
+
 ## [0.9.0] - 2026-07-05
 
 ### Added
