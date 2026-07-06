@@ -16,6 +16,8 @@ class RankedQuery:
     candidate_count: int
     best_corrupt: str
     margin: float
+    gold_relation_support: int
+    corrupt_relation_support: int
 
 
 @dataclass
@@ -53,6 +55,12 @@ def rank_queries(graph: Graph, queries: list[Query]) -> list[RankedQuery]:
                 candidate_count=candidate_count,
                 best_corrupt=best_corrupt,
                 margin=gold_score - best_corrupt_score,
+                gold_relation_support=graph.relation_support(
+                    query.relation, query.target
+                ),
+                corrupt_relation_support=graph.relation_support(
+                    query.relation, best_corrupt
+                ),
             )
         )
     return ranked
@@ -141,9 +149,50 @@ def print_summary(ranked: list[RankedQuery], predictions: Path, data_dir: Path) 
     for entity, count in corrupt_counts.most_common(8):
         print(f"  {entity}: n {count} ({100.0 * count / n:.1f}%)")
 
+    print_relation_support_summary(ranked)
+
 
 def hits_at(ranked: list[RankedQuery], k: int) -> float:
     return sum(1 for item in ranked if item.rank <= k) / len(ranked)
+
+
+def print_relation_support_summary(ranked: list[RankedQuery]) -> None:
+    supported_gold_zero_corrupt = [
+        item
+        for item in ranked
+        if item.gold_relation_support > 0 and item.corrupt_relation_support == 0
+    ]
+    support_advantage_losses = [
+        item
+        for item in ranked
+        if item.rank > 10 and item.gold_relation_support > item.corrupt_relation_support
+    ]
+    zero_zero = [
+        item
+        for item in ranked
+        if item.gold_relation_support == 0 and item.corrupt_relation_support == 0
+    ]
+    n = len(ranked)
+    print("relation-support summary:")
+    print(
+        "  gold supported, best corrupt unsupported: "
+        f"{len(supported_gold_zero_corrupt)} ({100.0 * len(supported_gold_zero_corrupt) / n:.1f}%)"
+    )
+    print(
+        "  same pattern among rank>50 failures: "
+        f"{sum(1 for item in supported_gold_zero_corrupt if item.rank > 50)}"
+    )
+    print(
+        "  rank>10 despite higher gold support: "
+        f"{len(support_advantage_losses)} ({100.0 * len(support_advantage_losses) / n:.1f}%)"
+    )
+    print(f"  no train support for either gold or best corrupt: {len(zero_zero)}")
+
+    by_relation = Counter(item.query.relation for item in supported_gold_zero_corrupt)
+    if by_relation:
+        print("  top supported-gold/unsupported-corrupt relations:")
+        for relation, count in by_relation.most_common(8):
+            print(f"    {relation}: {count}")
 
 
 def main() -> None:
