@@ -4,8 +4,7 @@
 [![Documentation](https://docs.rs/ricci/badge.svg)](https://docs.rs/ricci)
 [![CI](https://github.com/arclabs561/ricci/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/ricci/actions/workflows/ci.yml)
 
-Graph neural network layers, plus Ollivier-Ricci edge curvature
-(the `curvature` module) for finding oversquashing bottlenecks.
+Graph neural network layers.
 
 ## Quickstart
 
@@ -36,6 +35,10 @@ let y = burn::tensor::Tensor::<B, 2>::from_data(
 let d = ball.distance(x, y).to_data().to_vec::<f32>().unwrap()[0];
 assert!(d >= 0.0);
 ```
+
+## Feature flags
+
+- `wgpu`: enables Burn's WGPU backend. On macOS this runs through Metal.
 
 ## Geometry
 

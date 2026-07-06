@@ -118,9 +118,8 @@ full-ranking filtered Hits@10: 0.368   MRR: 0.201
 references on this split: GraIL 0.642, NBFNet 0.834 (50-neg protocol)
 ```
 
-Transfer genuinely happens; the example's doc comment records the full
-protocol provenance and one negative finding about validation-based checkpoint
-selection under distribution shift.
+The sampled protocol is close to NBFNet's reported number. The full-ranking
+numbers are lower and are the stricter diagnostic.
 
 ## Proof Sketches
 
