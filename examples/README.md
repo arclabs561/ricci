@@ -105,6 +105,19 @@ Reference-shaped PNA mode:
 AGG=pna EPOCHS=8 cargo run --release --features wgpu --example inductive_link_prediction
 ```
 
+```text
+selected epoch 7 (valid MRR 0.3296)
+full rank: mean 126.1  median 29  p90 339  p95 727  p99 1055  max 1088 (of 1093 entities)
+full recall@k / Hits@k: @1 0.112  @3 0.232  @10 0.368  @50 0.583
+sampled-50 recall@k / Hits@k: @1 0.407  @3 0.622  @10 0.817
+sampled-50 rank: mean 6.7  median 2  p90 17  max 51
+score margin gold-best-corrupt: mean -3.599  p10 -7.197  median -3.844; eval coverage 1.000  |h| 1.909
+fb237_v1 -> fb237_v1_ind (both directions, n = 410):
+Hits@10 (50 filtered negatives, GraIL protocol): 0.817
+full-ranking filtered Hits@10: 0.368   MRR: 0.201
+references on this split: GraIL 0.642, NBFNet 0.834 (50-neg protocol)
+```
+
 Transfer genuinely happens; the example's doc comment records the full
 protocol provenance and one negative finding about validation-based checkpoint
 selection under distribution shift.
