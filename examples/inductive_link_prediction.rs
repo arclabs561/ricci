@@ -35,6 +35,8 @@
 //! Knobs: `BATCH=64`, `FAILURE_DUMP=/tmp/failures.tsv`, and
 //! `EXPORT_PREDICTIONS=/tmp/predictions.txt`. `SAMPLE_WEIGHT=0` disables
 //! TorchDrug's degree-based training sample weights as an ablation.
+//! `EVIDENCE_FEATURES=1` adds relation-support and train-path-strength
+//! scorer inputs as an experiment flag.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -114,6 +116,8 @@ const EPOCHS: usize = 20; // override with EPOCHS=n (PNA mode is ~15x costlier p
 const DEFAULT_BATCH: usize = 32;
 const NEGATIVES: usize = 32;
 const SIGNATURE_RETRY_LIMIT: usize = 64;
+const EVIDENCE_DIM: usize = 2;
+const EVIDENCE_MAX_HOPS: usize = 5;
 const LR: f64 = 5e-3;
 const ADV_TEMPERATURE: f32 = 0.5;
 
@@ -139,9 +143,15 @@ struct NbfNet<B: Backend> {
     head2: Linear<B>,
     n_rel2: burn::module::Ignored<usize>,
     pna: burn::module::Ignored<bool>,
+    evidence_features: burn::module::Ignored<bool>,
 }
 
-fn init_model<B: Backend>(n_rel2: usize, pna: bool, device: &B::Device) -> NbfNet<B> {
+fn init_model<B: Backend>(
+    n_rel2: usize,
+    pna: bool,
+    evidence_features: bool,
+    device: &B::Device,
+) -> NbfNet<B> {
     let emb = |rows: usize| {
         burn::module::Param::initialized(
             burn::module::ParamId::new(),
@@ -178,10 +188,11 @@ fn init_model<B: Backend>(n_rel2: usize, pna: bool, device: &B::Device) -> NbfNe
         norms: (0..LAYERS)
             .map(|_| LayerNormConfig::new(DIM).init(device))
             .collect(),
-        head1: LinearConfig::new(2 * DIM, 2 * DIM).init(device),
+        head1: LinearConfig::new(2 * DIM + evidence_dim(evidence_features), 2 * DIM).init(device),
         head2: LinearConfig::new(2 * DIM, 1).init(device),
         n_rel2: burn::module::Ignored(n_rel2),
         pna: burn::module::Ignored(pna),
+        evidence_features: burn::module::Ignored(evidence_features),
     }
 }
 
@@ -306,7 +317,13 @@ where
     /// Score candidate tails: `states` `[Q, N, d]`, `cands` `[Q, C]` ->
     /// logits `[Q, C]`. The head sees the pair state concatenated with the
     /// query embedding (per-relation calibration, as in the reference MLP).
-    fn score(&self, states: Tensor<B, 3>, cands: &[Vec<usize>], rels_q: &[usize]) -> Tensor<B, 2> {
+    fn score(
+        &self,
+        states: Tensor<B, 3>,
+        cands: &[Vec<usize>],
+        rels_q: &[usize],
+        evidence: Option<&[f32]>,
+    ) -> Tensor<B, 2> {
         let q = cands.len();
         let c = cands[0].len();
         let flat: Vec<i64> = cands.iter().flatten().map(|&x| x as i64).collect();
@@ -330,10 +347,52 @@ where
             let ridx = Tensor::<B, 1, Int>::from_data(TensorData::new(ridx, [q * c]), &device);
             self.query.val().select(0, ridx)
         };
-        let feat = Tensor::cat(vec![picked, rq], 1);
+        let mut parts = vec![picked, rq];
+        if self.evidence_features.0 {
+            let evidence = evidence.expect("evidence features enabled without candidate evidence");
+            parts.push(Tensor::<B, 2>::from_data(
+                TensorData::new(evidence.to_vec(), [q * c, EVIDENCE_DIM]),
+                &device,
+            ));
+        }
+        let feat = Tensor::cat(parts, 1);
         let hidden = activation::relu(self.head1.forward(feat));
         self.head2.forward(hidden).reshape([q, c])
     }
+}
+
+fn evidence_dim(enabled: bool) -> usize {
+    if enabled {
+        EVIDENCE_DIM
+    } else {
+        0
+    }
+}
+
+fn evidence_probe(values: &[f32], row_width: usize) -> (f64, f64, f64, f64) {
+    let rows = values.len() / (row_width * EVIDENCE_DIM);
+    let mut pos_support = 0.0f64;
+    let mut neg_support = 0.0f64;
+    let mut pos_path = 0.0f64;
+    let mut neg_path = 0.0f64;
+    for row in 0..rows {
+        let row_start = row * row_width * EVIDENCE_DIM;
+        pos_support += values[row_start] as f64;
+        pos_path += values[row_start + 1] as f64;
+        for col in 1..row_width {
+            let offset = row_start + col * EVIDENCE_DIM;
+            neg_support += values[offset] as f64;
+            neg_path += values[offset + 1] as f64;
+        }
+    }
+    let rows = rows.max(1) as f64;
+    let negatives = rows * (row_width.saturating_sub(1)).max(1) as f64;
+    (
+        pos_support / rows,
+        neg_support / negatives,
+        pos_path / rows,
+        neg_path / negatives,
+    )
 }
 
 fn main() {
@@ -376,9 +435,10 @@ fn main() {
     let report_transfer =
         select_transfer || std::env::var("TRANSFER_VALID").is_ok_and(|v| v != "0");
     let sample_weight = env_flag_default("SAMPLE_WEIGHT", true);
+    let evidence_features = env_flag_default("EVIDENCE_FEATURES", false);
     let negative_mode = NegativeMode::from_env();
     eprintln!(
-        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}  negatives: {}  sample-weight: {}",
+        "aggregation: {}  epochs: {epochs}  batch: {batch_size}  backend: {}  select: {}  negatives: {}  sample-weight: {}  evidence-features: {}",
         if pna { "pna" } else { "sum" },
         backend_name(),
         if select_transfer {
@@ -387,10 +447,13 @@ fn main() {
             "train-valid"
         },
         negative_mode.as_str(),
-        if sample_weight { "on" } else { "off" }
+        if sample_weight { "on" } else { "off" },
+        if evidence_features { "on" } else { "off" }
     );
     reset_scatter_metrics();
-    let mut model = init_model::<TB>(n_rel2, pna, &device);
+    let train_evidence = EvidenceContext::new(&train_g, n_train_ent);
+    let ind_evidence = EvidenceContext::new(&ind_g, n_ind_ent);
+    let mut model = init_model::<TB>(n_rel2, pna, evidence_features, &device);
     // Burn's Adam epsilon defaults to 1e-5; match the 1e-8 the reference
     // implementations assume.
     let mut optim = AdamConfig::new()
@@ -467,6 +530,7 @@ fn main() {
         let mut dropped_edges_total = 0usize;
         let mut negative_stats = NegativeStats::default();
         let mut first_score_probe: Option<(f64, f64, f64)> = None;
+        let mut first_evidence_probe: Option<(f64, f64, f64, f64)> = None;
         let mut weight_sum = 0.0f64;
         let mut weight_min = f32::INFINITY;
         let mut weight_max = f32::NEG_INFINITY;
@@ -526,7 +590,15 @@ fn main() {
                     .to_vec::<f32>()
                     .unwrap()[0];
             }
-            let logits = model.score(states, &cands, &rels_q);
+            let evidence = evidence_features.then(|| {
+                train_evidence.features_for_candidates(&sources, &rels_q, &cands, Some(&drop))
+            });
+            if batches == 0 {
+                if let Some(values) = evidence.as_deref() {
+                    first_evidence_probe = Some(evidence_probe(values, 1 + NEGATIVES));
+                }
+            }
+            let logits = model.score(states, &cands, &rels_q, evidence.as_deref());
             let q = cands.len();
             let c = 1 + NEGATIVES;
             if batches == 0 {
@@ -585,6 +657,12 @@ fn main() {
                 pos, neg, hard
             );
         }
+        if let Some((pos_support, neg_support, pos_path, neg_path)) = first_evidence_probe {
+            eprint!(
+                "  first evidence support pos {:.3} neg {:.3} path pos {:.3} neg {:.3}",
+                pos_support, neg_support, pos_path, neg_path
+            );
+        }
         if negative_stats.total > 0 {
             eprint!(
                 "  neg sig-share {:.1}% pool {:.1}% reject/neg {:.2}",
@@ -623,7 +701,10 @@ fn main() {
                 &valid_queries,
                 &known_full,
                 batch_size,
-                None,
+                EvalOptions {
+                    evidence: evidence_features.then_some(&train_evidence),
+                    diagnostic: None,
+                },
             );
             eprint!("  valid MRR {:.4}", v.mrr);
             let mut selection_mrr = v.mrr;
@@ -635,7 +716,10 @@ fn main() {
                     &transfer_valid_queries,
                     &known_ind,
                     batch_size,
-                    None,
+                    EvalOptions {
+                        evidence: evidence_features.then_some(&ind_evidence),
+                        diagnostic: None,
+                    },
                 );
                 eprint!("  transfer-valid MRR {:.4}", tv.mrr);
                 if select_transfer {
@@ -658,7 +742,10 @@ fn main() {
             &valid_queries,
             &known_full,
             batch_size,
-            None,
+            EvalOptions {
+                evidence: evidence_features.then_some(&train_evidence),
+                diagnostic: None,
+            },
         );
         best_mrr = v.mrr;
         best_epoch = epochs.saturating_sub(1);
@@ -689,7 +776,10 @@ fn main() {
         &test_queries,
         &known_ind,
         batch_size,
-        Some(&diagnostic),
+        EvalOptions {
+            evidence: evidence_features.then_some(&ind_evidence),
+            diagnostic: Some(&diagnostic),
+        },
     );
     eprintln!(
         "full rank: mean {:.1}  median {}  p90 {}  p95 {}  p99 {}  max {} (of {} entities)",
@@ -858,6 +948,11 @@ impl EvalDiagnosticContext {
     }
 }
 
+struct EvalOptions<'a> {
+    evidence: Option<&'a EvidenceContext>,
+    diagnostic: Option<&'a EvalDiagnosticContext>,
+}
+
 /// Filtered ranking over all entities plus the 50-sampled-negative
 /// protocol, for a query set against a fixed message graph.
 fn evaluate(
@@ -867,7 +962,7 @@ fn evaluate(
     queries: &[(usize, usize, usize)],
     known: &HashMap<(usize, usize), HashSet<usize>>,
     batch_size: usize,
-    diagnostic: Option<&EvalDiagnosticContext>,
+    options: EvalOptions<'_>,
 ) -> EvalOut {
     let (heads, tails, etypes, tails_host) = edges;
     let device = heads.device();
@@ -883,7 +978,8 @@ fn evaluate(
     let mut chunks = 0u32;
     let mut rng = 0xabcdef12345_u64;
     let mut records = Vec::new();
-    let mut predictions = diagnostic
+    let mut predictions = options
+        .diagnostic
         .filter(|d| d.collect_predictions)
         .map(|_| Vec::with_capacity(queries.len()));
     for chunk in queries.chunks(batch_size) {
@@ -910,7 +1006,10 @@ fn evaluate(
         chunks += 1;
         // Full ranking: score everything, filter known tails.
         let all: Vec<Vec<usize>> = (0..chunk.len()).map(|_| (0..n_ent).collect()).collect();
-        let logits = model.score(states, &all, &rels_q);
+        let evidence = options
+            .evidence
+            .map(|ctx| ctx.features_for_candidates(&sources, &rels_q, &all, None));
+        let logits = model.score(states, &all, &rels_q, evidence.as_deref());
         let flat: Vec<f32> = logits.into_data().to_vec().unwrap();
         for (b, &(s, r, t)) in chunk.iter().enumerate() {
             let row = &flat[b * n_ent..(b + 1) * n_ent];
@@ -973,7 +1072,7 @@ fn evaluate(
                 }
             }
             sample_ranks.push(rank50);
-            if let Some(diagnostic) = diagnostic {
+            if let Some(diagnostic) = options.diagnostic {
                 let gold_distance = shortest_path_distance(&diagnostic.adj, s, t);
                 let corrupt_distance =
                     shortest_path_distance(&diagnostic.adj, s, best_corrupt_entity);
@@ -1468,6 +1567,76 @@ fn signatures_share(signatures: &[HashSet<usize>], a: usize, b: usize) -> bool {
     } else {
         sb.iter().any(|rel| sa.contains(rel))
     }
+}
+
+struct EvidenceContext {
+    relation_support: Vec<Vec<f32>>,
+    adj: Vec<Vec<usize>>,
+}
+
+impl EvidenceContext {
+    fn new(graph: &Graph, n_ent: usize) -> Self {
+        let mut relation_support = vec![vec![0.0f32; n_ent]; graph.n_rel * 2];
+        for &(h, r, t) in &graph.train {
+            relation_support[r][t] += 1.0;
+            relation_support[r + graph.n_rel][h] += 1.0;
+        }
+        Self {
+            relation_support,
+            adj: graph.undirected_adjacency(n_ent),
+        }
+    }
+
+    fn features_for_candidates(
+        &self,
+        sources: &[usize],
+        rels_q: &[usize],
+        cands: &[Vec<usize>],
+        drop: Option<&HashSet<(usize, usize)>>,
+    ) -> Vec<f32> {
+        let count = cands.iter().map(Vec::len).sum::<usize>();
+        let mut out = Vec::with_capacity(count * EVIDENCE_DIM);
+        let mut distance_cache: HashMap<usize, Vec<Option<usize>>> = HashMap::new();
+        for ((&source, &relation), row) in sources.iter().zip(rels_q.iter()).zip(cands.iter()) {
+            let distances = distance_cache
+                .entry(source)
+                .or_insert_with(|| bounded_distances(&self.adj, source, EVIDENCE_MAX_HOPS, drop));
+            for &cand in row {
+                let support = self.relation_support[relation][cand].ln_1p();
+                let path_strength = distances[cand].map_or(0.0, |d| 1.0 / (1.0 + d as f32));
+                out.push(support);
+                out.push(path_strength);
+            }
+        }
+        out
+    }
+}
+
+fn bounded_distances(
+    adj: &[Vec<usize>],
+    source: usize,
+    max_hops: usize,
+    drop: Option<&HashSet<(usize, usize)>>,
+) -> Vec<Option<usize>> {
+    let mut dist = vec![None; adj.len()];
+    let mut queue = VecDeque::new();
+    dist[source] = Some(0);
+    queue.push_back(source);
+    while let Some(node) = queue.pop_front() {
+        let depth = dist[node].unwrap();
+        if depth >= max_hops {
+            continue;
+        }
+        let next_depth = depth + 1;
+        for &next in &adj[node] {
+            if drop.is_some_and(|d| d.contains(&(node, next))) || dist[next].is_some() {
+                continue;
+            }
+            dist[next] = Some(next_depth);
+            queue.push_back(next);
+        }
+    }
+    dist
 }
 
 struct Graph {

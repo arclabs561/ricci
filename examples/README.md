@@ -130,6 +130,9 @@ weights for an ablation.
 Set `NEGATIVE_MODE=signature` for a diagnostic hard-negative sampler whose
 negatives share at least one observed relation signature with the gold entity.
 The default is the reference uniform strict-negative sampler.
+Set `EVIDENCE_FEATURES=1` to add candidate relation-support and train-path
+strength inputs to the scorer. This is an experiment flag, not the reference
+protocol.
 
 External sampled, type-matched, and all-entity metrics:
 
