@@ -153,6 +153,9 @@ Summarize an exported prediction file without rerunning training:
 python3 scripts/summarize_inductive_predictions.py /tmp/ricci-predictions.txt
 ```
 
+The summary includes full-rank metrics, worst relations, frequent best corrupts,
+and relation-support buckets.
+
 Add `--support-sweep` to test a simple train-relation-support prior over the
 exported scores. It also reports which relations and cases move in or out of
 Hits@10. This is a diagnostic, not the evaluation protocol.

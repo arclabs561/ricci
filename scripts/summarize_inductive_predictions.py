@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections.abc import Callable
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,6 +231,70 @@ def print_relation_support_summary(ranked: list[RankedQuery]) -> None:
         print("  top supported-gold/unsupported-corrupt relations:")
         for relation, count in by_relation.most_common(8):
             print(f"    {relation}: {count}")
+    print_relation_support_buckets(ranked)
+
+
+def print_relation_support_buckets(ranked: list[RankedQuery]) -> None:
+    print("  full-rank by gold relation-support bucket:")
+    print_support_bucket_rows(
+        bucket_ranked(ranked, lambda item: support_bucket(item.gold_relation_support))
+    )
+    print("  full-rank by gold-vs-best-corrupt support:")
+    print_support_bucket_rows(
+        bucket_ranked(
+            ranked,
+            lambda item: support_comparison_bucket(
+                item.gold_relation_support, item.corrupt_relation_support
+            ),
+        )
+    )
+
+
+def bucket_ranked(
+    ranked: list[RankedQuery], bucket_for: Callable[[RankedQuery], str]
+) -> dict[str, RelationSummary]:
+    buckets: dict[str, RelationSummary] = defaultdict(RelationSummary)
+    for item in ranked:
+        summary = buckets[bucket_for(item)]
+        summary.count += 1
+        summary.reciprocal_rank += 1.0 / item.rank
+        summary.hits10 += int(item.rank <= 10)
+        summary.rank_sum += item.rank
+    return buckets
+
+
+def support_bucket(support: int) -> str:
+    if support == 0:
+        return "0"
+    if support == 1:
+        return "1"
+    if support <= 4:
+        return "2-4"
+    if support <= 9:
+        return "5-9"
+    return "10+"
+
+
+def support_comparison_bucket(gold_support: int, corrupt_support: int) -> str:
+    if gold_support == corrupt_support:
+        return "equal"
+    if gold_support > corrupt_support:
+        return "gold-higher"
+    return "corrupt-higher"
+
+
+def print_support_bucket_rows(buckets: dict[str, RelationSummary]) -> None:
+    order = ["0", "1", "2-4", "5-9", "10+", "gold-higher", "equal", "corrupt-higher"]
+    for label in order:
+        summary = buckets.get(label)
+        if summary is None:
+            continue
+        print(
+            f"    {label}: n {summary.count} "
+            f"MRR {summary.reciprocal_rank / summary.count:.3f} "
+            f"H@10 {summary.hits10 / summary.count:.3f} "
+            f"mean-rank {summary.rank_sum / summary.count:.1f}"
+        )
 
 
 def print_support_sweep(
