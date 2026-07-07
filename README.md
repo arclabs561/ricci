@@ -2,7 +2,6 @@
 
 [![crates.io](https://img.shields.io/crates/v/ricci.svg)](https://crates.io/crates/ricci)
 [![Documentation](https://docs.rs/ricci/badge.svg)](https://docs.rs/ricci)
-[![CI](https://github.com/arclabs561/ricci/actions/workflows/ci.yml/badge.svg)](https://github.com/arclabs561/ricci/actions/workflows/ci.yml)
 
 Graph neural network layers.
 
