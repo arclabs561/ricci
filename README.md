@@ -9,20 +9,20 @@ Graph neural network layers.
 
 ```toml
 [dependencies]
-ricci = "0.9"
-burn = { version = "0.20", default-features = false, features = ["std"] }
-burn-ndarray = "0.20"
+ricci = "0.10"
+burn = { version = "0.21", default-features = false, features = ["std"] }
+burn-ndarray = "0.21"
 ```
 
 Hyperbolic distance on the Poincare ball:
 
 ```rust
-use burn::tensor::{backend::Backend, TensorData};
+use burn::tensor::{ops::Device, TensorData};
 use burn_ndarray::NdArray;
 use ricci::PoincareBall;
 
 type B = NdArray<f32>;
-let dev = <B as Backend>::Device::default();
+let dev = Device::<B>::default();
 let ball = PoincareBall::new(1.0);
 
 let x = burn::tensor::Tensor::<B, 2>::from_data(
@@ -36,6 +36,8 @@ assert!(d >= 0.0);
 ```
 
 ## Feature flags
+
+Ricci 0.10 supports Burn 0.21 and requires Rust 1.92 or newer.
 
 - `wgpu`: enables Burn's WGPU backend. On macOS this runs through Metal.
 - `metal`: enables Burn's WGPU backend with Metal selected explicitly.

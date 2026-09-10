@@ -1,8 +1,10 @@
 //! Graph neural network layers on Burn tensors.
 
-use burn::module::{Ignored, Module, Param, ParamId};
+use burn::module::{Module, Param, ParamId};
 use burn::nn::{Linear, LinearConfig};
 use burn::tensor::backend::Backend;
+#[cfg(test)]
+use burn::tensor::ops::Device;
 use burn::tensor::{Distribution, IndexingUpdateOp, Int, Tensor};
 
 use crate::hyperbolic::PoincareBall;
@@ -75,12 +77,12 @@ impl<B: Backend> GCNConv<B> {
 /// # Example
 ///
 /// ```
-/// use burn::tensor::{backend::Backend, TensorData};
+/// use burn::tensor::{backend::Backend, ops::Device, TensorData};
 /// use burn_ndarray::NdArray;
 /// use ricci::HGCNConv;
 ///
 /// type B = NdArray<f32>;
-/// let dev = <B as Backend>::Device::default();
+/// let dev = Device::<B>::default();
 ///
 /// let layer = HGCNConv::<B>::init(4, 1.0, &dev);
 /// let x = burn::tensor::Tensor::<B, 2>::from_data(
@@ -98,12 +100,13 @@ impl<B: Backend> GCNConv<B> {
 /// ```
 ///
 /// Derives [`Module`] like [`GCNConv`], so it can be embedded in a trainable
-/// model; the ball geometry is a constant carried via [`Ignored`] (it holds
+/// model; the ball geometry is skipped from module persistence (it holds
 /// no learnable parameters).
 #[derive(Module, Debug)]
 pub struct HGCNConv<B: Backend> {
     linear: Linear<B>,
-    ball: Ignored<PoincareBall>,
+    #[module(skip)]
+    ball: PoincareBall,
 }
 
 impl<B: Backend> HGCNConv<B> {
@@ -111,7 +114,7 @@ impl<B: Backend> HGCNConv<B> {
     pub fn new(linear: Linear<B>, c: f64) -> Self {
         Self {
             linear,
-            ball: Ignored(PoincareBall::new(c)),
+            ball: PoincareBall::new(c),
         }
     }
 
@@ -119,7 +122,7 @@ impl<B: Backend> HGCNConv<B> {
     pub fn init(d: usize, c: f64, device: &B::Device) -> Self {
         Self {
             linear: LinearConfig::new(d, d).init(device),
-            ball: Ignored(PoincareBall::new(c)),
+            ball: PoincareBall::new(c),
         }
     }
 
@@ -130,7 +133,7 @@ impl<B: Backend> HGCNConv<B> {
 
     /// Access the Poincare ball geometry.
     pub fn ball(&self) -> &PoincareBall {
-        &self.ball.0
+        &self.ball
     }
 
     /// Forward pass using log/exp at the origin (no activation).
@@ -265,12 +268,12 @@ impl<B: Backend> HGCNConv<B> {
 /// # Example
 ///
 /// ```
-/// use burn::tensor::{backend::Backend, TensorData};
+/// use burn::tensor::{backend::Backend, ops::Device, TensorData};
 /// use burn_ndarray::NdArray;
 /// use ricci::RGCNConv;
 ///
 /// type B = NdArray<f32>;
-/// let dev = <B as Backend>::Device::default();
+/// let dev = Device::<B>::default();
 ///
 /// let layer = RGCNConv::<B>::init(4, 4, 2, &dev);
 /// let x = burn::tensor::Tensor::<B, 2>::from_data(
@@ -526,8 +529,8 @@ mod tests {
 
     type B = NdArray<f32>;
 
-    fn dev() -> <B as Backend>::Device {
-        <B as Backend>::Device::default()
+    fn dev() -> Device<B> {
+        Device::<B>::default()
     }
 
     fn fixed_linear(weight: f32, bias: f32) -> Linear<B> {

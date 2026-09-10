@@ -4,6 +4,8 @@
 //! The reference implementation for numerical correctness is `hyperball::PoincareBallCore`.
 
 use burn::tensor::backend::Backend;
+#[cfg(test)]
+use burn::tensor::ops::Device;
 use burn::tensor::Tensor;
 
 /// Poincare ball operations on Burn tensors (curvature parameter `c > 0`).
@@ -14,12 +16,12 @@ use burn::tensor::Tensor;
 /// # Example
 ///
 /// ```
-/// use burn::tensor::{backend::Backend, TensorData};
+/// use burn::tensor::{backend::Backend, ops::Device, TensorData};
 /// use burn_ndarray::NdArray;
 /// use ricci::PoincareBall;
 ///
 /// type B = NdArray<f32>;
-/// let dev = <B as Backend>::Device::default();
+/// let dev = Device::<B>::default();
 /// let ball = PoincareBall::new(1.0);
 ///
 /// let x = burn::tensor::Tensor::<B, 2>::from_data(
@@ -263,8 +265,8 @@ mod tests {
 
     type B = NdArray<f32>;
 
-    fn dev() -> <B as Backend>::Device {
-        <B as Backend>::Device::default()
+    fn dev() -> Device<B> {
+        Device::<B>::default()
     }
 
     fn to_burn(v: &[f32], shape: [usize; 2]) -> Tensor<B, 2> {

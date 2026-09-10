@@ -3,7 +3,7 @@
 //! Run:
 //!   cargo run -p ricci --example burn_poincare_smoke
 
-use burn::tensor::backend::Backend;
+use burn::tensor::ops::Device;
 use burn::tensor::TensorData;
 use burn_ndarray::NdArray;
 use ricci::PoincareBall;
@@ -11,7 +11,7 @@ use ricci::PoincareBall;
 type B = NdArray<f32>;
 
 fn main() {
-    let device = <B as Backend>::Device::default();
+    let device = Device::<B>::default();
     let ball = PoincareBall::new(1.0);
 
     let x = burn::tensor::Tensor::<B, 2>::from_data(

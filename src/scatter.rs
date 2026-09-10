@@ -11,6 +11,8 @@
 //! element, which is the almost-everywhere-correct gradient of max.
 
 use burn::tensor::backend::Backend;
+#[cfg(test)]
+use burn::tensor::ops::Device;
 use burn::tensor::{Int, Tensor as BurnTensor, TensorData};
 #[cfg(any(feature = "wgpu", feature = "metal"))]
 use burn::tensor::{Shape, TensorPrimitive};
@@ -214,20 +216,20 @@ where
     let mask = empty_like(&values, shape, F::dtype());
     let cube_dim = CubeDim::new(&values.client, q * num_segments * d);
     let cube_count = calculate_cube_count_elemwise(&values.client, q * num_segments * d, cube_dim);
+    let dtypes = [values.dtype.into(), edge_order.dtype.into()];
 
     segment_argmax_min_kernel::launch::<WgpuRuntime>(
         &values.client,
         cube_count,
         cube_dim,
-        values.as_tensor_arg(1),
-        edge_order.as_tensor_arg(1),
-        offsets.as_tensor_arg(1),
-        idx_max.as_tensor_arg(1),
-        idx_min.as_tensor_arg(1),
-        mask.as_tensor_arg(1),
-        [values.dtype.into(), edge_order.dtype.into()],
-    )
-    .expect("segment max/min kernel should launch");
+        values.clone().into_tensor_arg(),
+        edge_order.into_tensor_arg(),
+        offsets.into_tensor_arg(),
+        idx_max.clone().into_tensor_arg(),
+        idx_min.clone().into_tensor_arg(),
+        mask.clone().into_tensor_arg(),
+        dtypes,
+    );
 
     (
         BurnTensor::from_primitive(idx_max),
@@ -428,8 +430,8 @@ mod tests {
 
     type B = NdArray<f32>;
 
-    fn dev() -> <B as Backend>::Device {
-        <B as Backend>::Device::default()
+    fn dev() -> Device<B> {
+        Device::<B>::default()
     }
 
     fn t3(data: Vec<f32>, shape: [usize; 3]) -> BurnTensor<B, 3> {
@@ -498,7 +500,7 @@ mod tests {
     #[test]
     fn gradient_reaches_argmax_only() {
         type A = Autodiff<NdArray<f32>>;
-        let device = <A as Backend>::Device::default();
+        let device = Device::<A>::default();
         let segs = [0usize, 0, 0];
         let vals = BurnTensor::<A, 3>::from_data(
             TensorData::new(vec![1.0f32, 9.0, 5.0, 2.0, 3.0, 4.0], [1, 3, 2]),
@@ -516,7 +518,7 @@ mod tests {
     #[test]
     fn wgpu_matches_host_fused_max_min() {
         type G = burn::backend::Wgpu<f32, i32>;
-        let device = <G as Backend>::Device::default();
+        let device = Device::<G>::default();
         let segs = [0usize, 1, 0, 1];
         let vals = BurnTensor::<G, 3>::from_data(
             TensorData::new(

@@ -1,7 +1,8 @@
 [package]
 name = "ricci"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
+rust-version = "1.92"
 description = "Graph neural network layers"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arclabs561/ricci"
@@ -18,9 +19,9 @@ wgpu = ["burn/cubecl", "burn/wgpu", "dep:cubecl"]
 metal = ["burn/cubecl", "burn/metal", "dep:cubecl"]
 
 [dependencies]
-burn = { version = "0.20.0", default-features = false, features = ["std"] }
-burn-ndarray = { version = "0.20.0", default-features = true }
-cubecl = { version = "0.9.0", default-features = false, optional = true }
+burn = { version = "0.21.0", default-features = false, features = ["std"] }
+burn-ndarray = { version = "0.21.0", default-features = true }
+cubecl = { version = "0.10.0", default-features = false, optional = true }
 # The curvature module composes the ecosystem's primitives: random-walk
 # measures (lapl), hop distances (graphops), entropic W1 (wass).
 graphops = "0.5"
@@ -34,4 +35,4 @@ hyperball = "0.1"
 # Enable autodiff for the training example (dev-only; lib stays inference-only).
 # Cargo unifies these features with the normal `burn` dep when building ricci's
 # own examples/tests, without affecting downstream consumers.
-burn = { version = "0.20.0", default-features = false, features = ["std", "autodiff"] }
+burn = { version = "0.21.0", default-features = false, features = ["std", "autodiff"] }

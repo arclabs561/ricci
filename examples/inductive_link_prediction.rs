@@ -50,6 +50,7 @@ use burn::module::Module;
 use burn::nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig};
 use burn::optim::{AdamConfig, GradientsParams, Optimizer};
 use burn::tensor::backend::Backend;
+use burn::tensor::ops::Device;
 use burn::tensor::{activation, Int, Tensor, TensorData};
 #[cfg(not(any(feature = "wgpu", feature = "metal")))]
 use burn_ndarray::NdArray;
@@ -141,9 +142,12 @@ struct NbfNet<B: Backend> {
     norms: Vec<LayerNorm<B>>, // sum aggregation over hub nodes explodes without per-layer normalization
     head1: Linear<B>,
     head2: Linear<B>,
-    n_rel2: burn::module::Ignored<usize>,
-    pna: burn::module::Ignored<bool>,
-    evidence_features: burn::module::Ignored<bool>,
+    #[module(skip)]
+    n_rel2: usize,
+    #[module(skip)]
+    pna: bool,
+    #[module(skip)]
+    evidence_features: bool,
 }
 
 fn init_model<B: Backend>(
@@ -190,9 +194,9 @@ fn init_model<B: Backend>(
             .collect(),
         head1: LinearConfig::new(2 * DIM + evidence_dim(evidence_features), 2 * DIM).init(device),
         head2: LinearConfig::new(2 * DIM, 1).init(device),
-        n_rel2: burn::module::Ignored(n_rel2),
-        pna: burn::module::Ignored(pna),
-        evidence_features: burn::module::Ignored(evidence_features),
+        n_rel2,
+        pna,
+        evidence_features,
     }
 }
 
@@ -235,7 +239,7 @@ where
         let h0 = mask * rq_flat.clone().reshape([q, 1, DIM]);
         // Degree scalers for PNA (recomputed per call: edge drops change
         // degrees). degree_out + 1 counts the boundary as one message.
-        let (degp1, scale_t, inv_scale_t) = if self.pna.0 {
+        let (degp1, scale_t, inv_scale_t) = if self.pna {
             let mut deg = vec![1.0f32; n];
             for &t in tails_host {
                 deg[t] += 1.0;
@@ -263,10 +267,8 @@ where
             .zip(self.stats_lin.iter())
         {
             // Query-conditional relation representations for this layer.
-            let rel = proj
-                .forward(rq_flat.clone())
-                .reshape([q, self.n_rel2.0, DIM]);
-            let msgs_out = if self.pna.0 {
+            let rel = proj.forward(rq_flat.clone()).reshape([q, self.n_rel2, DIM]);
+            let msgs_out = if self.pna {
                 // PNA aggregation (Corso et al., NeurIPS 2020) as in the
                 // reference layer: mean/max/min/std over incoming messages
                 // (boundary included as one message), times three degree
@@ -348,7 +350,7 @@ where
             self.query.val().select(0, ridx)
         };
         let mut parts = vec![picked, rq];
-        if self.evidence_features.0 {
+        if self.evidence_features {
             let evidence = evidence.expect("evidence features enabled without candidate evidence");
             parts.push(Tensor::<B, 2>::from_data(
                 TensorData::new(evidence.to_vec(), [q * c, EVIDENCE_DIM]),
@@ -421,7 +423,7 @@ fn main() {
         ind_g.test.len(),
     );
 
-    let device = <TB as Backend>::Device::default();
+    let device = Device::<TB>::default();
     let pna = std::env::var("AGG").is_ok_and(|v| v == "pna");
     let epochs = std::env::var("EPOCHS")
         .ok()

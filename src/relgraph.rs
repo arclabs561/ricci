@@ -14,6 +14,8 @@
 //! normalization is the caller's choice, as with every conv in this crate.
 
 use burn::tensor::backend::Backend;
+#[cfg(test)]
+use burn::tensor::ops::Device;
 use burn::tensor::{Tensor, TensorData};
 
 /// Index of the tail-to-head interaction adjacency in the returned stack.
@@ -151,8 +153,8 @@ mod tests {
 
     type B = NdArray<f32>;
 
-    fn dev() -> <B as Backend>::Device {
-        <B as Backend>::Device::default()
+    fn dev() -> Device<B> {
+        Device::<B>::default()
     }
 
     fn at(m: &Tensor<B, 2>, i: usize, j: usize) -> f32 {

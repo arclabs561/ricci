@@ -3,7 +3,7 @@
 //! Run:
 //!   cargo run -p ricci --example hgcn_smoke
 
-use burn::tensor::backend::Backend;
+use burn::tensor::ops::Device;
 use burn::tensor::TensorData;
 use burn_ndarray::NdArray;
 use ricci::HGCNConv;
@@ -11,7 +11,7 @@ use ricci::HGCNConv;
 type B = NdArray<f32>;
 
 fn main() {
-    let device = <B as Backend>::Device::default();
+    let device = Device::<B>::default();
 
     let n = 6usize;
     let d = 4usize;

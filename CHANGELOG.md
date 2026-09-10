@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-10
+
+### Changed
+
+- Updated the Burn integration to 0.21 and CubeCL to 0.10. This raises the
+  minimum supported Rust version to 1.92.
+
 ### Added
 
 - `GCNConv::forward_legacy` and `RGCNConv::forward_legacy` reproduce the
