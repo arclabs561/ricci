@@ -9,26 +9,27 @@ Graph neural network layers.
 
 ```toml
 [dependencies]
-ricci = "0.10"
-burn = { version = "0.21", default-features = false, features = ["std"] }
-burn-ndarray = "0.21"
+# Unreleased development API.
+ricci = { git = "https://github.com/arclabs561/ricci", branch = "main" }
+burn = { git = "https://github.com/tracel-ai/burn", rev = "1414c8a14e5169ef5e5fc67f9b8ab01a25d6352d", default-features = false, features = ["std", "flex"] }
 ```
+
+This tracks Ricci's development branch and its pinned Burn development
+revision. The latest crates.io release, Ricci 0.10, remains on Burn 0.21.
 
 Hyperbolic distance on the Poincare ball:
 
 ```rust
-use burn::tensor::{ops::Device, TensorData};
-use burn_ndarray::NdArray;
+use burn::tensor::{Device, TensorData};
 use ricci::PoincareBall;
 
-type B = NdArray<f32>;
-let dev = Device::<B>::default();
+let dev = Device::flex();
 let ball = PoincareBall::new(1.0);
 
-let x = burn::tensor::Tensor::<B, 2>::from_data(
+let x = burn::tensor::Tensor::<2>::from_data(
     TensorData::new(vec![0.10f32, 0.00, 0.00], [1, 3]), &dev,
 );
-let y = burn::tensor::Tensor::<B, 2>::from_data(
+let y = burn::tensor::Tensor::<2>::from_data(
     TensorData::new(vec![0.00f32, 0.10, 0.00], [1, 3]), &dev,
 );
 let d = ball.distance(x, y).to_data().to_vec::<f32>().unwrap()[0];
@@ -37,10 +38,15 @@ assert!(d >= 0.0);
 
 ## Feature flags
 
-Ricci 0.10 supports Burn 0.21 and requires Rust 1.92 or newer.
+The development API uses the pinned Burn 0.22 revision and requires Rust 1.95
+or newer. Its tensors are runtime-dispatched `Tensor<D>` values: application
+types no longer carry a `Backend` parameter.
 
-- `wgpu`: enables Burn's WGPU backend. On macOS this runs through Metal.
-- `metal`: enables Burn's WGPU backend with Metal selected explicitly.
+- `Device::flex()` selects Burn's CPU runtime.
+- `metal`: enables the Metal runtime; construct it as
+  `Device::metal(Default::default()).autodiff()` in training code.
+- `wgpu` remains available for Burn's WGPU runtime. On macOS it normally uses
+  Metal.
 
 ## Geometry
 

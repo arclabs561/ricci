@@ -6,18 +6,12 @@
 //! This is a proof sketch, not public API: compose ordinary score biases with a
 //! tropical/max-plus graph bias before extracting a reusable abstraction.
 
-use burn::tensor::ops::Device;
+use burn::tensor::Device;
 use burn::tensor::{Tensor, TensorData};
-use burn_ndarray::NdArray;
-
-type B = NdArray<f32>;
 
 const NEG_INF: f32 = -1.0e9;
 
-fn tensor2<const N: usize, const M: usize>(
-    rows: [[f32; M]; N],
-    device: &Device<B>,
-) -> Tensor<B, 2> {
+fn tensor2<const N: usize, const M: usize>(rows: [[f32; M]; N], device: &Device) -> Tensor<2> {
     let flat: Vec<f32> = rows.into_iter().flatten().collect();
     Tensor::from_data(TensorData::new(flat, [N, M]), device)
 }
@@ -51,7 +45,7 @@ fn row_argmax<const N: usize>(m: &[f32]) -> [usize; N] {
 }
 
 fn main() {
-    let device = Device::<B>::default();
+    let device = Device::flex();
 
     let q = tensor2(
         [
@@ -73,7 +67,7 @@ fn main() {
     );
 
     let scores = q.matmul(k.transpose());
-    let base_argmax = row_argmax::<4>(&scores.clone().to_data().to_vec::<f32>().unwrap());
+    let base_argmax = row_argmax::<4>(&scores.clone().to_data().try_to_vec::<f32>().unwrap());
 
     let positional_bias = tensor2(
         [
@@ -98,7 +92,7 @@ fn main() {
     let tropical_bias = tensor2(two_hop, &device) * 0.5;
 
     let biased = scores + positional_bias + tropical_bias;
-    let biased_vec = biased.to_data().to_vec::<f32>().unwrap();
+    let biased_vec = biased.to_data().try_to_vec::<f32>().unwrap();
     let biased_argmax = row_argmax::<4>(&biased_vec);
 
     println!("base row argmax:   {base_argmax:?}");

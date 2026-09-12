@@ -7,56 +7,57 @@
 //! fixed, fit a small adapter on a few support pairs, then evaluate a held-out
 //! pair from the same local task.
 
-use burn::backend::Autodiff;
 use burn::module::Module;
 use burn::nn::{Linear, LinearConfig};
-use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use burn::tensor::backend::{AutodiffBackend, Backend};
-use burn::tensor::{Tensor, TensorData};
-use burn_ndarray::NdArray;
-
-type Base = NdArray<f32>;
+use burn::optim::{AdamConfig, GradientsParams};
+use burn::tensor::{Device, Tensor, TensorData};
 
 #[derive(Module, Debug)]
-struct Adapter<B: Backend> {
-    linear: Linear<B>,
+struct Adapter {
+    linear: Linear,
 }
 
-impl<B: Backend> Adapter<B> {
-    fn init(device: &B::Device) -> Self {
+impl Adapter {
+    fn init(device: &Device) -> Self {
         Self {
             linear: LinearConfig::new(2, 2).init(device),
         }
     }
 
-    fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    fn forward(&self, x: Tensor<2>) -> Tensor<2> {
         self.linear.forward(x)
     }
 }
 
-fn tensor2<B: Backend, const N: usize>(rows: [[f32; 2]; N], device: &B::Device) -> Tensor<B, 2> {
+fn tensor2<const N: usize>(rows: [[f32; 2]; N], device: &Device) -> Tensor<2> {
     let flat: Vec<f32> = rows.into_iter().flatten().collect();
     Tensor::from_data(TensorData::new(flat, [N, 2]), device)
 }
 
-fn mse<B: Backend>(predicted: Tensor<B, 2>, target: Tensor<B, 2>) -> Tensor<B, 1> {
+fn mse(predicted: Tensor<2>, target: Tensor<2>) -> Tensor<1> {
     (predicted - target).powf_scalar(2.0).mean()
 }
 
-fn scalar_loss<B: Backend>(loss: Tensor<B, 1>) -> f32 {
-    loss.into_data().to_vec::<f32>().unwrap()[0]
+fn scalar_loss(loss: Tensor<1>) -> f32 {
+    loss.into_data().try_to_vec::<f32>().unwrap()[0]
 }
 
-fn fit<B: AutodiffBackend>(device: B::Device) {
-    let support_x = tensor2::<B, 4>([[2.0, 0.0], [0.0, 2.0], [2.0, 2.0], [-2.0, 1.0]], &device);
-    let support_y = tensor2::<B, 4>([[0.5, 0.0], [0.0, 0.5], [0.5, 0.5], [-0.5, 0.25]], &device);
-    let heldout_x = tensor2::<B, 2>([[1.0, -2.0], [-2.0, -2.0]], &device);
-    let heldout_y = tensor2::<B, 2>([[0.25, -0.5], [-0.5, -0.5]], &device);
+fn fit(training_device: Device) {
+    let support_x = tensor2::<4>(
+        [[2.0, 0.0], [0.0, 2.0], [2.0, 2.0], [-2.0, 1.0]],
+        &training_device,
+    );
+    let support_y = tensor2::<4>(
+        [[0.5, 0.0], [0.0, 0.5], [0.5, 0.5], [-0.5, 0.25]],
+        &training_device,
+    );
+    let heldout_x = tensor2::<2>([[1.0, -2.0], [-2.0, -2.0]], &training_device);
+    let heldout_y = tensor2::<2>([[0.25, -0.5], [-0.5, -0.5]], &training_device);
 
     let baseline_support = scalar_loss(mse(support_x.clone(), support_y.clone()));
     let baseline_heldout = scalar_loss(mse(heldout_x.clone(), heldout_y.clone()));
 
-    let mut adapter = Adapter::<B>::init(&device);
+    let mut adapter = Adapter::init(&training_device);
     let mut optim = AdamConfig::new().init();
 
     for _ in 0..300 {
@@ -77,5 +78,5 @@ fn fit<B: AutodiffBackend>(device: B::Device) {
 }
 
 fn main() {
-    fit::<Autodiff<Base>>(Default::default());
+    fit(Device::flex().autodiff());
 }

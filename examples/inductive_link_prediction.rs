@@ -43,68 +43,32 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use burn::backend::Autodiff;
-#[cfg(any(feature = "wgpu", feature = "metal"))]
-use burn::backend::Wgpu;
 use burn::module::Module;
 use burn::nn::{LayerNorm, LayerNormConfig, Linear, LinearConfig};
-use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use burn::tensor::backend::Backend;
-use burn::tensor::ops::Device;
-use burn::tensor::{activation, Int, Tensor, TensorData};
-#[cfg(not(any(feature = "wgpu", feature = "metal")))]
-use burn_ndarray::NdArray;
+use burn::optim::{AdamConfig, GradientsParams};
+use burn::tensor::{activation, Device, Int, Tensor, TensorData};
 #[cfg(any(feature = "wgpu", feature = "metal"))]
 use ricci::scatter::scatter_max_min_indices_wgpu;
 use ricci::scatter::{reset_scatter_metrics, scatter_max_min, scatter_metrics, ScatterMetrics};
 use ricci::NBFConv;
 
-#[cfg(any(feature = "wgpu", feature = "metal"))]
-type TB = Autodiff<Wgpu<f32, i32>>;
-#[cfg(not(any(feature = "wgpu", feature = "metal")))]
-type TB = Autodiff<NdArray<f32>>;
-
-struct ScatterChoice;
-
-trait ExampleScatter<B: Backend> {
-    fn max_min(
-        values: Tensor<B, 3>,
-        segments: &[usize],
-        num_segments: usize,
-    ) -> (Tensor<B, 3>, Tensor<B, 3>);
-}
-
-#[cfg(any(feature = "wgpu", feature = "metal"))]
-impl ExampleScatter<TB> for ScatterChoice {
-    fn max_min(
-        values: Tensor<TB, 3>,
-        segments: &[usize],
-        num_segments: usize,
-    ) -> (Tensor<TB, 3>, Tensor<TB, 3>) {
-        if std::env::var("PNA_SCATTER").is_ok_and(|value| value == "host") {
-            return scatter_max_min(values, segments, num_segments);
+fn pna_max_min(
+    values: Tensor<3>,
+    segments: &[usize],
+    num_segments: usize,
+) -> (Tensor<3>, Tensor<3>) {
+    #[cfg(any(feature = "wgpu", feature = "metal"))]
+    {
+        if !std::env::var("PNA_SCATTER").is_ok_and(|value| value == "host") {
+            let (idx_max, idx_min, mask) =
+                scatter_max_min_indices_wgpu(values.clone(), segments, num_segments);
+            return (
+                values.clone().gather(1, idx_max) * mask.clone(),
+                values.gather(1, idx_min) * mask,
+            );
         }
-        let (idx_max, idx_min, mask) =
-            scatter_max_min_indices_wgpu(values.clone().inner(), segments, num_segments);
-        let idx_max = Tensor::<TB, 3, Int>::from_inner(idx_max);
-        let idx_min = Tensor::<TB, 3, Int>::from_inner(idx_min);
-        let mask = Tensor::<TB, 3>::from_inner(mask);
-        (
-            values.clone().gather(1, idx_max) * mask.clone(),
-            values.gather(1, idx_min) * mask,
-        )
     }
-}
-
-#[cfg(not(any(feature = "wgpu", feature = "metal")))]
-impl ExampleScatter<TB> for ScatterChoice {
-    fn max_min(
-        values: Tensor<TB, 3>,
-        segments: &[usize],
-        num_segments: usize,
-    ) -> (Tensor<TB, 3>, Tensor<TB, 3>) {
-        scatter_max_min(values, segments, num_segments)
-    }
+    scatter_max_min(values, segments, num_segments)
 }
 
 // Hyperparameters follow NBFNet's config/inductive/fb15k237.yaml (dim 32,
@@ -123,25 +87,25 @@ const LR: f64 = 5e-3;
 const ADV_TEMPERATURE: f32 = 0.5;
 
 #[derive(Module, Debug)]
-struct NbfNet<B: Backend> {
-    query: burn::module::Param<Tensor<B, 2>>, // [R', d] indicator seeds
+struct NbfNet {
+    query: burn::module::Param<Tensor<2>>, // [R', d] indicator seeds
     // Per-layer relation representations are PROJECTED from the query
     // embedding (the reference's `dependent: yes`), so message modulation
     // is query-conditional, not a shared table.
-    rel_proj: Vec<Linear<B>>, // d -> R' * d
-    layers: Vec<NBFConv<B>>,
+    rel_proj: Vec<Linear>, // d -> R' * d
+    layers: Vec<NBFConv>,
     // The reference combine is Linear(cat[state, messages]); a concat
     // linear is the sum of two linears on the parts, so adding this
     // self-state path to forward_edges' output is exactly equivalent.
-    self_lin: Vec<Linear<B>>,
+    self_lin: Vec<Linear>,
     // PNA mode (AGG=pna): 4 statistics x 3 degree scalers. The reference
     // applies one Linear to the 12d scaled features; algebraically that is
     // three 4d->d linears whose outputs are scaled per node, which avoids
     // materializing the [Q, N, 4d, 3] product (the profiled hot spot).
-    stats_lin: Vec<[Linear<B>; 3]>,
-    norms: Vec<LayerNorm<B>>, // sum aggregation over hub nodes explodes without per-layer normalization
-    head1: Linear<B>,
-    head2: Linear<B>,
+    stats_lin: Vec<[Linear; 3]>,
+    norms: Vec<LayerNorm>, // sum aggregation over hub nodes explodes without per-layer normalization
+    head1: Linear,
+    head2: Linear,
     #[module(skip)]
     n_rel2: usize,
     #[module(skip)]
@@ -150,12 +114,7 @@ struct NbfNet<B: Backend> {
     evidence_features: bool,
 }
 
-fn init_model<B: Backend>(
-    n_rel2: usize,
-    pna: bool,
-    evidence_features: bool,
-    device: &B::Device,
-) -> NbfNet<B> {
+fn init_model(n_rel2: usize, pna: bool, evidence_features: bool, device: &Device) -> NbfNet {
     let emb = |rows: usize| {
         burn::module::Param::initialized(
             burn::module::ParamId::new(),
@@ -200,11 +159,7 @@ fn init_model<B: Backend>(
     }
 }
 
-impl<B> NbfNet<B>
-where
-    B: Backend,
-    ScatterChoice: ExampleScatter<B>,
-{
+impl NbfNet {
     /// Pair states for a batch of queries `(source, relation)` over the
     /// given edge list: `[Q, N, d]`.
     #[allow(clippy::too_many_arguments)]
@@ -213,12 +168,12 @@ where
         n: usize,
         sources: &[usize],
         rels_q: &[usize],
-        heads: Tensor<B, 1, Int>,
-        tails: Tensor<B, 1, Int>,
-        etypes: Tensor<B, 1, Int>,
+        heads: Tensor<1, Int>,
+        tails: Tensor<1, Int>,
+        etypes: Tensor<1, Int>,
         tails_host: &[usize],
-        device: &B::Device,
-    ) -> Tensor<B, 3> {
+        device: &Device,
+    ) -> Tensor<3> {
         let q = sources.len();
         // Boundary: h0[b, sources[b], :] = query[rels_q[b], :], built as a
         // host one-hot mask times the query rows so it stays differentiable.
@@ -227,11 +182,11 @@ where
             for (b, &s) in sources.iter().enumerate() {
                 m[b * n + s] = 1.0;
             }
-            Tensor::<B, 3>::from_data(TensorData::new(m, [q, n, 1]), device)
+            Tensor::<3>::from_data(TensorData::new(m, [q, n, 1]), device)
         };
         let rq_flat = {
             let idx: Vec<i64> = rels_q.iter().map(|&r| r as i64).collect();
-            let idx = Tensor::<B, 1, Int>::from_data(TensorData::new(idx, [q]), device);
+            let idx = Tensor::<1, Int>::from_data(TensorData::new(idx, [q]), device);
             self.query.val().select(0, idx) // [Q, d]
         };
         // h0 is [Q, N, d]. States start AT the boundary (not zero), so
@@ -249,12 +204,12 @@ where
             let sc: Vec<f32> = logd.iter().map(|&l| l / smean).collect();
             let inv: Vec<f32> = sc.iter().map(|&s| 1.0 / s.max(0.01)).collect();
             (
-                Tensor::<B, 3>::from_data(TensorData::new(deg, [1, n, 1]), device),
-                Tensor::<B, 3>::from_data(TensorData::new(sc, [1, n, 1]), device),
-                Tensor::<B, 3>::from_data(TensorData::new(inv, [1, n, 1]), device),
+                Tensor::<3>::from_data(TensorData::new(deg, [1, n, 1]), device),
+                Tensor::<3>::from_data(TensorData::new(sc, [1, n, 1]), device),
+                Tensor::<3>::from_data(TensorData::new(inv, [1, n, 1]), device),
             )
         } else {
-            let z = || Tensor::<B, 3>::zeros([1, 1, 1], device);
+            let z = || Tensor::<3>::zeros([1, 1, 1], device);
             (z(), z(), z())
         };
         let mut h = h0.clone();
@@ -274,7 +229,7 @@ where
                 // (boundary included as one message), times three degree
                 // scalers (identity, log-degree, inverse log-degree).
                 let msgs = h.clone().select(1, heads.clone()) * rel.select(1, etypes.clone());
-                let zeros = || Tensor::<B, 3>::zeros([q, n, DIM], device);
+                let zeros = || Tensor::<3>::zeros([q, n, DIM], device);
                 let sums = zeros().select_assign(
                     1,
                     tails.clone(),
@@ -289,7 +244,7 @@ where
                 );
                 let mean = (sums + h0.clone()) / degp1.clone();
                 let sq_mean = (sq_sums + h0.clone().powf_scalar(2.0)) / degp1.clone();
-                let (mx, mn) = ScatterChoice::max_min(msgs, tails_host, n);
+                let (mx, mn) = pna_max_min(msgs, tails_host, n);
                 let mx = mx.max_pair(h0.clone());
                 let mn = mn.min_pair(h0.clone());
                 let std = (sq_mean - mean.clone().powf_scalar(2.0))
@@ -321,16 +276,16 @@ where
     /// query embedding (per-relation calibration, as in the reference MLP).
     fn score(
         &self,
-        states: Tensor<B, 3>,
+        states: Tensor<3>,
         cands: &[Vec<usize>],
         rels_q: &[usize],
         evidence: Option<&[f32]>,
-    ) -> Tensor<B, 2> {
+    ) -> Tensor<2> {
         let q = cands.len();
         let c = cands[0].len();
         let flat: Vec<i64> = cands.iter().flatten().map(|&x| x as i64).collect();
         let device = states.device();
-        let idx = Tensor::<B, 1, Int>::from_data(TensorData::new(flat, [q * c]), &device);
+        let idx = Tensor::<1, Int>::from_data(TensorData::new(flat, [q * c]), &device);
         // Per-query gather: offset candidate ids into the flattened [Q*N] axis.
         let n = states.dims()[1];
         let offsets: Vec<i64> = (0..q)
@@ -346,13 +301,13 @@ where
                 .iter()
                 .flat_map(|&r| std::iter::repeat_n(r as i64, c))
                 .collect();
-            let ridx = Tensor::<B, 1, Int>::from_data(TensorData::new(ridx, [q * c]), &device);
+            let ridx = Tensor::<1, Int>::from_data(TensorData::new(ridx, [q * c]), &device);
             self.query.val().select(0, ridx)
         };
         let mut parts = vec![picked, rq];
         if self.evidence_features {
             let evidence = evidence.expect("evidence features enabled without candidate evidence");
-            parts.push(Tensor::<B, 2>::from_data(
+            parts.push(Tensor::<2>::from_data(
                 TensorData::new(evidence.to_vec(), [q * c, EVIDENCE_DIM]),
                 &device,
             ));
@@ -423,7 +378,8 @@ fn main() {
         ind_g.test.len(),
     );
 
-    let device = Device::<TB>::default();
+    let device = Device::flex().autodiff();
+    device.seed(0x4e42_464e_6574);
     let pna = std::env::var("AGG").is_ok_and(|v| v == "pna");
     let epochs = std::env::var("EPOCHS")
         .ok()
@@ -455,12 +411,10 @@ fn main() {
     reset_scatter_metrics();
     let train_evidence = EvidenceContext::new(&train_g, n_train_ent);
     let ind_evidence = EvidenceContext::new(&ind_g, n_ind_ent);
-    let mut model = init_model::<TB>(n_rel2, pna, evidence_features, &device);
+    let mut model = init_model(n_rel2, pna, evidence_features, &device);
     // Burn's Adam epsilon defaults to 1e-5; match the 1e-8 the reference
     // implementations assume.
-    let mut optim = AdamConfig::new()
-        .with_epsilon(1e-8)
-        .init::<TB, NbfNet<TB>>();
+    let mut optim = AdamConfig::new().with_epsilon(1e-8).init();
 
     // Queries: every train triple in both directions.
     let mut queries: Vec<(usize, usize, usize)> = Vec::new(); // (src, rel, tgt)
@@ -494,7 +448,7 @@ fn main() {
         valid_queries.swap(i, (vstate % (i as u64 + 1)) as usize);
     }
     valid_queries.truncate(256);
-    let edges_valid = train_g.edge_tensors::<TB>(&device, None);
+    let edges_valid = train_g.edge_tensors(&device, None);
     let known_full = train_g.known_tails_full();
     let mut transfer_valid_queries: Vec<(usize, usize, usize)> = Vec::new();
     if report_transfer {
@@ -504,7 +458,7 @@ fn main() {
         }
     }
     let edges_transfer_valid = if report_transfer {
-        Some(ind_g.edge_tensors::<TB>(&device, None))
+        Some(ind_g.edge_tensors(&device, None))
     } else {
         None
     };
@@ -569,8 +523,7 @@ fn main() {
                 .collect();
             drop_pairs_total += drop.len();
             dropped_edges_total += train_g.dropped_directed_edges(&drop);
-            let (heads, tails, etypes, tails_host) =
-                train_g.edge_tensors::<TB>(&device, Some(&drop));
+            let (heads, tails, etypes, tails_host) = train_g.edge_tensors(&device, Some(&drop));
             let sources: Vec<usize> = batch.iter().map(|q| q.0).collect();
             let rels_q: Vec<usize> = batch.iter().map(|q| q.1).collect();
             let states = model.propagate(
@@ -589,7 +542,7 @@ fn main() {
                     .abs()
                     .mean()
                     .into_data()
-                    .to_vec::<f32>()
+                    .try_to_vec::<f32>()
                     .unwrap()[0];
             }
             let evidence = evidence_features.then(|| {
@@ -604,7 +557,7 @@ fn main() {
             let q = cands.len();
             let c = 1 + NEGATIVES;
             if batches == 0 {
-                let lv: Vec<f32> = logits.clone().into_data().to_vec().unwrap();
+                let lv: Vec<f32> = logits.clone().into_data().try_to_vec().unwrap();
                 let mut pos_sum = 0.0f64;
                 let mut neg_sum = 0.0f64;
                 let mut hard_margin_sum = 0.0f64;
@@ -632,14 +585,14 @@ fn main() {
                 / 2.0;
             let loss = if sample_weight {
                 let weights =
-                    Tensor::<TB, 2>::from_data(TensorData::new(batch_weights, [q, 1]), &device);
+                    Tensor::<2>::from_data(TensorData::new(batch_weights, [q, 1]), &device);
                 (row_loss * weights.clone()).sum() / weights.sum()
             } else {
                 row_loss.mean()
             };
             let grads = GradientsParams::from_grads(loss.backward(), &model);
             model = optim.step(LR, model, grads);
-            total += loss.into_data().to_vec::<f32>().unwrap()[0];
+            total += loss.into_data().try_to_vec::<f32>().unwrap()[0];
             batches += 1;
         }
         eprint!(
@@ -764,7 +717,7 @@ fn main() {
 
     // Inductive evaluation on the disjoint graph: same relations, new
     // entities; the model transfers because nothing entity-wise was learned.
-    let (heads_e, tails_e, etypes_e, tails_host_e) = ind_g.edge_tensors::<TB>(&device, None);
+    let (heads_e, tails_e, etypes_e, tails_host_e) = ind_g.edge_tensors(&device, None);
     let mut test_queries: Vec<(usize, usize, usize)> = Vec::new();
     for &(h, r, t) in &ind_g.test {
         test_queries.push((h, r, t));
@@ -882,13 +835,12 @@ fn print_scatter_metrics(metrics: ScatterMetrics) {
     );
 }
 
-type EdgeTensorsOf<B> = (
-    Tensor<B, 1, Int>,
-    Tensor<B, 1, Int>,
-    Tensor<B, 1, Int>,
+type EdgeTensors = (
+    Tensor<1, Int>,
+    Tensor<1, Int>,
+    Tensor<1, Int>,
     Vec<usize>, // host-side tails, for segment argmax and degrees
 );
-type EdgeTensors = EdgeTensorsOf<TB>;
 
 struct EvalOut {
     mrr: f64,
@@ -958,7 +910,7 @@ struct EvalOptions<'a> {
 /// Filtered ranking over all entities plus the 50-sampled-negative
 /// protocol, for a query set against a fixed message graph.
 fn evaluate(
-    model: &NbfNet<TB>,
+    model: &NbfNet,
     n_ent: usize,
     edges: &EdgeTensors,
     queries: &[(usize, usize, usize)],
@@ -1003,7 +955,7 @@ fn evaluate(
             .abs()
             .mean()
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap()[0];
         chunks += 1;
         // Full ranking: score everything, filter known tails.
@@ -1012,7 +964,7 @@ fn evaluate(
             .evidence
             .map(|ctx| ctx.features_for_candidates(&sources, &rels_q, &all, None));
         let logits = model.score(states, &all, &rels_q, evidence.as_deref());
-        let flat: Vec<f32> = logits.into_data().to_vec().unwrap();
+        let flat: Vec<f32> = logits.into_data().try_to_vec().unwrap();
         for (b, &(s, r, t)) in chunk.iter().enumerate() {
             let row = &flat[b * n_ent..(b + 1) * n_ent];
             let gold = row[t];
@@ -1132,9 +1084,9 @@ fn evaluate(
     }
 }
 
-fn batched_coverage<B: Backend>(states: &Tensor<B, 3>) -> f32 {
+fn batched_coverage(states: &Tensor<3>) -> f32 {
     let [q, n, d] = states.dims();
-    let vals: Vec<f32> = states.clone().into_data().to_vec().unwrap();
+    let vals: Vec<f32> = states.clone().into_data().try_to_vec().unwrap();
     let reached = vals
         .chunks(d)
         .filter(|row| row.iter().any(|v| v.abs() > 1e-6))
@@ -1704,11 +1656,7 @@ impl Graph {
 
     /// Edge tensors over the observed (train) triples, both directions,
     /// optionally dropping every edge between given (src, tgt) pairs.
-    fn edge_tensors<B: Backend>(
-        &self,
-        device: &B::Device,
-        drop: Option<&HashSet<(usize, usize)>>,
-    ) -> EdgeTensorsOf<B> {
+    fn edge_tensors(&self, device: &Device, drop: Option<&HashSet<(usize, usize)>>) -> EdgeTensors {
         let mut h = Vec::new();
         let mut t = Vec::new();
         let mut ty = Vec::new();

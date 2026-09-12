@@ -22,14 +22,11 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::ExitCode;
 
-use burn::backend::Autodiff;
 use burn::module::Module;
 use burn::nn::loss::CrossEntropyLoss;
 use burn::optim::decay::WeightDecayConfig;
-use burn::optim::{AdamConfig, GradientsParams, Optimizer};
-use burn::tensor::backend::{AutodiffBackend, Backend};
-use burn::tensor::{activation, Int, Tensor, TensorData};
-use burn_ndarray::NdArray;
+use burn::optim::{AdamConfig, GradientsParams};
+use burn::tensor::{activation, Device, Int, Tensor, TensorData};
 
 use ricci::GCNConv;
 
@@ -130,20 +127,20 @@ fn load_planetoid(dir: &Path, name: &str) -> std::io::Result<Graph> {
 
 /// 2-layer GCN. Both fields are `Module`s, so the whole net is trainable.
 #[derive(Module, Debug)]
-struct Gcn<B: Backend> {
-    gc1: GCNConv<B>,
-    gc2: GCNConv<B>,
+struct Gcn {
+    gc1: GCNConv,
+    gc2: GCNConv,
 }
 
-impl<B: Backend> Gcn<B> {
-    fn init(n_features: usize, n_classes: usize, device: &B::Device) -> Self {
+impl Gcn {
+    fn init(n_features: usize, n_classes: usize, device: &Device) -> Self {
         Self {
             gc1: GCNConv::init(n_features, HIDDEN, device),
             gc2: GCNConv::init(HIDDEN, n_classes, device),
         }
     }
 
-    fn forward(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
+    fn forward(&self, x: Tensor<2>, adj: Tensor<2>) -> Tensor<2> {
         let h = self.gc1.forward(x, adj.clone());
         let h = activation::relu(h);
         self.gc2.forward(h, adj)
@@ -199,7 +196,7 @@ fn split(labels: &[i32], n_classes: usize) -> (Vec<usize>, Vec<usize>) {
     (train, test)
 }
 
-fn train<B: AutodiffBackend>(device: B::Device, dir: &Path, name: &str) {
+fn train(device: Device, dir: &Path, name: &str) {
     let g = load_planetoid(dir, name).unwrap();
     let (train_idx, test_idx) = split(&g.labels, g.n_classes);
     println!(
@@ -211,13 +208,13 @@ fn train<B: AutodiffBackend>(device: B::Device, dir: &Path, name: &str) {
         test_idx.len()
     );
 
-    let x = Tensor::<B, 2>::from_data(
+    let x = Tensor::<2>::from_data(
         TensorData::new(g.features.clone(), [g.n, g.n_features]),
         &device,
     );
-    let adj = Tensor::<B, 2>::from_data(TensorData::new(g.adj_norm.clone(), [g.n, g.n]), &device);
-    let targets = Tensor::<B, 1, Int>::from_data(TensorData::new(g.labels.clone(), [g.n]), &device);
-    let train_sel = Tensor::<B, 1, Int>::from_data(
+    let adj = Tensor::<2>::from_data(TensorData::new(g.adj_norm.clone(), [g.n, g.n]), &device);
+    let targets = Tensor::<1, Int>::from_data(TensorData::new(g.labels.clone(), [g.n]), &device);
+    let train_sel = Tensor::<1, Int>::from_data(
         TensorData::new(
             train_idx.iter().map(|&i| i as i32).collect::<Vec<_>>(),
             [train_idx.len()],
@@ -225,7 +222,7 @@ fn train<B: AutodiffBackend>(device: B::Device, dir: &Path, name: &str) {
         &device,
     );
 
-    let mut model = Gcn::<B>::init(g.n_features, g.n_classes, &device);
+    let mut model = Gcn::init(g.n_features, g.n_classes, &device);
     let mut optim = AdamConfig::new()
         .with_weight_decay(Some(WeightDecayConfig::new(5e-4)))
         .init();
@@ -243,15 +240,19 @@ fn train<B: AutodiffBackend>(device: B::Device, dir: &Path, name: &str) {
         model = optim.step(lr, model, grads);
 
         if epoch % 20 == 0 || epoch == 1 {
-            let logits_v = logits.into_data().to_vec::<f32>().unwrap();
+            let logits_v = logits.into_data().try_to_vec::<f32>().unwrap();
             let tr = accuracy(&logits_v, &g.labels, &train_idx, g.n_classes);
             let te = accuracy(&logits_v, &g.labels, &test_idx, g.n_classes);
-            let loss_v = loss.into_data().to_vec::<f32>().unwrap()[0];
+            let loss_v = loss.into_data().try_to_vec::<f32>().unwrap()[0];
             println!("epoch {epoch:>3}  loss {loss_v:.4}  train acc {tr:.4}  test acc {te:.4}");
         }
     }
 
-    let logits_v = model.forward(x, adj).into_data().to_vec::<f32>().unwrap();
+    let logits_v = model
+        .forward(x, adj)
+        .into_data()
+        .try_to_vec::<f32>()
+        .unwrap();
     println!(
         "\nfinal test accuracy: {:.4}",
         accuracy(&logits_v, &g.labels, &test_idx, g.n_classes)
@@ -272,6 +273,6 @@ fn main() -> ExitCode {
         );
         return ExitCode::SUCCESS;
     }
-    train::<Autodiff<NdArray<f32>>>(Default::default(), &dir, &name);
+    train(Device::flex().autodiff(), &dir, &name);
     ExitCode::SUCCESS
 }

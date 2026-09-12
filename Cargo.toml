@@ -1,8 +1,8 @@
 [package]
 name = "ricci"
-version = "0.10.0"
+version = "0.11.0-dev"
 edition = "2021"
-rust-version = "1.92"
+rust-version = "1.95"
 description = "Graph neural network layers"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/arclabs561/ricci"
@@ -15,13 +15,12 @@ categories = ["science", "algorithms"]
 
 [features]
 default = []
-wgpu = ["burn/cubecl", "burn/wgpu", "dep:cubecl"]
-metal = ["burn/cubecl", "burn/metal", "dep:cubecl"]
+wgpu = ["burn/extension", "burn/autodiff", "burn/cubecl", "burn/wgpu", "dep:cubecl"]
+metal = ["burn/extension", "burn/autodiff", "burn/cubecl", "burn/metal", "dep:cubecl"]
 
 [dependencies]
-burn = { version = "0.21.0", default-features = false, features = ["std"] }
-burn-ndarray = { version = "0.21.0", default-features = true }
-cubecl = { version = "0.10.0", default-features = false, optional = true }
+burn = { git = "https://github.com/tracel-ai/burn", rev = "1414c8a14e5169ef5e5fc67f9b8ab01a25d6352d", default-features = false, features = ["std", "flex"] }
+cubecl = { git = "https://github.com/tracel-ai/cubecl", rev = "359770be3c9fe69c0b0f4c6f7697062a86bbf4a8", default-features = false, optional = true }
 # The curvature module composes the ecosystem's primitives: random-walk
 # measures (lapl), hop distances (graphops), entropic W1 (wass).
 graphops = "0.5"
@@ -32,7 +31,8 @@ wass = "0.2"
 [dev-dependencies]
 proptest = "1.5"
 hyperball = "0.1"
-# Enable autodiff for the training example (dev-only; lib stays inference-only).
+# The CPU default does not enable autodiff. This dev dependency enables it for
+# training examples and tests; optional GPU features enable it too.
 # Cargo unifies these features with the normal `burn` dep when building ricci's
 # own examples/tests, without affecting downstream consumers.
-burn = { version = "0.21.0", default-features = false, features = ["std", "autodiff"] }
+burn = { git = "https://github.com/tracel-ai/burn", rev = "1414c8a14e5169ef5e5fc67f9b8ab01a25d6352d", default-features = false, features = ["std", "autodiff", "optim"] }

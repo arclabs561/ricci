@@ -3,6 +3,12 @@
 Each example is runnable from the repo root. Deterministic smoke-example output
 is shown verbatim. Training output is one recorded run and is not a benchmark.
 
+The development branch uses Burn's runtime-dispatched tensors. These examples
+select the Flex CPU runtime with `Device::flex()`. To adapt training code for
+macOS Metal, enable `metal` and construct
+`Device::metal(Default::default()).autodiff()`; this changes the device, not
+the layer or loss API.
+
 ## Which example should I run?
 
 | I want to... | Example |

@@ -1,11 +1,8 @@
 //! Poincare ball geometry on Burn tensors.
 //!
-//! All operations are backend-agnostic: they work on any `B: Backend` (ndarray, wgpu, tch, etc.).
+//! All operations are runtime-dispatched through Burn's dynamic tensor device.
 //! The reference implementation for numerical correctness is `hyperball::PoincareBallCore`.
 
-use burn::tensor::backend::Backend;
-#[cfg(test)]
-use burn::tensor::ops::Device;
 use burn::tensor::Tensor;
 
 /// Poincare ball operations on Burn tensors (curvature parameter `c > 0`).
@@ -16,30 +13,28 @@ use burn::tensor::Tensor;
 /// # Example
 ///
 /// ```
-/// use burn::tensor::{backend::Backend, ops::Device, TensorData};
-/// use burn_ndarray::NdArray;
+/// use burn::tensor::{Device, TensorData};
 /// use ricci::PoincareBall;
 ///
-/// type B = NdArray<f32>;
-/// let dev = Device::<B>::default();
+/// let dev = Device::flex();
 /// let ball = PoincareBall::new(1.0);
 ///
-/// let x = burn::tensor::Tensor::<B, 2>::from_data(
+/// let x = burn::tensor::Tensor::<2>::from_data(
 ///     TensorData::new(vec![0.3f32, 0.0, 0.0], [1, 3]), &dev,
 /// );
-/// let y = burn::tensor::Tensor::<B, 2>::from_data(
+/// let y = burn::tensor::Tensor::<2>::from_data(
 ///     TensorData::new(vec![0.0f32, 0.3, 0.0], [1, 3]), &dev,
 /// );
 ///
 /// // Distance is always non-negative and finite.
-/// let d = ball.distance(x.clone(), y).to_data().to_vec::<f32>().unwrap()[0];
+/// let d = ball.distance(x.clone(), y).to_data().try_to_vec::<f32>().unwrap()[0];
 /// assert!(d > 0.0 && d.is_finite());
 ///
 /// // exp0(log0(x)) round-trips.
 /// let v = ball.log0(x.clone());
 /// let x2 = ball.exp0(v);
-/// let err: f32 = x.to_data().to_vec::<f32>().unwrap().iter()
-///     .zip(x2.to_data().to_vec::<f32>().unwrap().iter())
+/// let err: f32 = x.to_data().try_to_vec::<f32>().unwrap().iter()
+///     .zip(x2.to_data().try_to_vec::<f32>().unwrap().iter())
 ///     .map(|(a, b)| (a - b).abs()).sum();
 /// assert!(err < 1e-3);
 /// ```
@@ -80,56 +75,56 @@ impl PoincareBall {
         (1.0 / self.sqrt_c()) - 1e-5
     }
 
-    fn atanh<B: Backend>(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    fn atanh(&self, x: Tensor<2>) -> Tensor<2> {
         // atanh(x) = 0.5 * ln((1+x)/(1-x))
-        let ones = Tensor::<B, 2>::ones(x.dims(), &x.device());
+        let ones = Tensor::<2>::ones(x.dims(), &x.device());
         let num = ones.clone() + x.clone();
         let den = ones - x;
         (num / (den + self.eps)).log() * 0.5
     }
 
-    fn norm_keepdim<B: Backend>(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    fn norm_keepdim(&self, x: Tensor<2>) -> Tensor<2> {
         let b = x.dims()[0];
         x.powf_scalar(2.0).sum_dim(1).sqrt().reshape([b, 1])
     }
 
-    fn norm_sq_keepdim<B: Backend>(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    fn norm_sq_keepdim(&self, x: Tensor<2>) -> Tensor<2> {
         let b = x.dims()[0];
         x.powf_scalar(2.0).sum_dim(1).reshape([b, 1])
     }
 
-    fn dot_keepdim<B: Backend>(&self, x: Tensor<B, 2>, y: Tensor<B, 2>) -> Tensor<B, 2> {
+    fn dot_keepdim(&self, x: Tensor<2>, y: Tensor<2>) -> Tensor<2> {
         let b = x.dims()[0];
         (x * y).sum_dim(1).reshape([b, 1])
     }
 
     /// Conformal factor: `lambda_x = 2 / (1 - c ||x||^2)`.
-    pub fn lambda_x<B: Backend>(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn lambda_x(&self, x: Tensor<2>) -> Tensor<2> {
         let b = x.dims()[0];
         let dev = x.device();
         let x2 = x.powf_scalar(2.0).sum_dim(1).reshape([b, 1]);
-        let denom = (Tensor::<B, 2>::ones([b, 1], &dev) - x2 * self.c).clamp_min(self.eps);
-        Tensor::<B, 2>::ones([b, 1], &dev) * 2.0 / denom
+        let denom = (Tensor::<2>::ones([b, 1], &dev) - x2 * self.c).clamp_min(self.eps);
+        Tensor::<2>::ones([b, 1], &dev) * 2.0 / denom
     }
 
     /// Project points to stay inside the ball `||x|| < (1 - eps) / sqrt(c)`.
-    pub fn project<B: Backend>(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn project(&self, x: Tensor<2>) -> Tensor<2> {
         let b = x.dims()[0];
         let norm = self.norm_keepdim(x.clone());
         let max = self.max_norm();
         let denom = norm + self.eps;
-        let scale = (Tensor::<B, 2>::ones([b, 1], &x.device()) * max / denom).clamp_max(1.0);
+        let scale = (Tensor::<2>::ones([b, 1], &x.device()) * max / denom).clamp_max(1.0);
         x * scale
     }
 
     /// Mobius addition on the ball.
-    pub fn mobius_add<B: Backend>(&self, x: Tensor<B, 2>, y: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn mobius_add(&self, x: Tensor<2>, y: Tensor<2>) -> Tensor<2> {
         let b = x.dims()[0];
         let x2 = self.norm_sq_keepdim(x.clone());
         let y2 = self.norm_sq_keepdim(y.clone());
         let xy = self.dot_keepdim(x.clone(), y.clone());
 
-        let ones = Tensor::<B, 2>::ones([b, 1], &x.device());
+        let ones = Tensor::<2>::ones([b, 1], &x.device());
 
         let a = ones.clone() + xy.clone() * (2.0 * self.c) + y2.clone() * self.c;
         let b1 = ones.clone() - x2.clone() * self.c;
@@ -141,7 +136,7 @@ impl PoincareBall {
     }
 
     /// Hyperbolic distance `d(x,y)` on the ball.
-    pub fn distance<B: Backend>(&self, x: Tensor<B, 2>, y: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn distance(&self, x: Tensor<2>, y: Tensor<2>) -> Tensor<2> {
         let x = self.project(x);
         let y = self.project(y);
         let neg_x = x * -1.0;
@@ -152,7 +147,7 @@ impl PoincareBall {
     }
 
     /// Log map at origin: `log_0(x)`.
-    pub fn log0<B: Backend>(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn log0(&self, x: Tensor<2>) -> Tensor<2> {
         let x = self.project(x);
         let norm = self.norm_keepdim(x.clone());
         let z = (norm.clone() * self.sqrt_c()).clamp_max(1.0 - self.eps);
@@ -162,7 +157,7 @@ impl PoincareBall {
     }
 
     /// Exp map at origin: `exp_0(v)`.
-    pub fn exp0<B: Backend>(&self, v: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn exp0(&self, v: Tensor<2>) -> Tensor<2> {
         let norm = self.norm_keepdim(v.clone());
         let z = norm.clone() * self.sqrt_c();
         let scale = z.clone().tanh() / (z + self.eps) / self.sqrt_c();
@@ -170,7 +165,7 @@ impl PoincareBall {
     }
 
     /// Log map at basepoint p: `log_p(x)`.
-    pub fn log_map<B: Backend>(&self, p: Tensor<B, 2>, x: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn log_map(&self, p: Tensor<2>, x: Tensor<2>) -> Tensor<2> {
         let p = self.project(p);
         let x = self.project(x);
         let neg_p = p.clone() * -1.0;
@@ -185,7 +180,7 @@ impl PoincareBall {
     }
 
     /// Exp map at basepoint p: `exp_p(v)`.
-    pub fn exp_map<B: Backend>(&self, p: Tensor<B, 2>, v: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn exp_map(&self, p: Tensor<2>, v: Tensor<2>) -> Tensor<2> {
         let p = self.project(p);
         let vnorm = self.norm_keepdim(v.clone());
         let lambda = self.lambda_x(p.clone());
@@ -198,11 +193,7 @@ impl PoincareBall {
     /// Parallel transport from 0 to x along the radial geodesic.
     ///
     /// `P^c_{0 -> x}(v) = (lambda_0 / lambda_x) v = (2 / lambda_x) v`.
-    pub fn parallel_transport_0_to_x<B: Backend>(
-        &self,
-        x: Tensor<B, 2>,
-        v0: Tensor<B, 2>,
-    ) -> Tensor<B, 2> {
+    pub fn parallel_transport_0_to_x(&self, x: Tensor<2>, v0: Tensor<2>) -> Tensor<2> {
         let x = self.project(x);
         let lambda_x = self.lambda_x(x);
         let scale = 2.0 / (lambda_x + self.eps);
@@ -213,7 +204,7 @@ impl PoincareBall {
     ///
     /// Ensures the tangent vector maps to a point inside the ball under exp0.
     /// Used between curvature changes (HGCN pattern: log0 with c_in, proj_tan0 + exp0 with c_out).
-    pub fn proj_tan0<B: Backend>(&self, v: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn proj_tan0(&self, v: Tensor<2>) -> Tensor<2> {
         // For the Poincare ball, tangent space at origin is Euclidean (no rescaling needed
         // beyond ensuring the exp map stays in the ball). The conformal factor at origin is
         // lambda_0 = 2, so tangent vectors are already in standard coordinates.
@@ -222,7 +213,7 @@ impl PoincareBall {
         let norm = self.norm_keepdim(v.clone());
         let b = v.dims()[0];
         let scale =
-            (Tensor::<B, 2>::ones([b, 1], &v.device()) * max / (norm + self.eps)).clamp_max(1.0);
+            (Tensor::<2>::ones([b, 1], &v.device()) * max / (norm + self.eps)).clamp_max(1.0);
         v * scale
     }
 
@@ -230,14 +221,9 @@ impl PoincareBall {
     ///
     /// Pattern from Chami et al. (2019): `exp0_out(act(log0_in(x)))`.
     /// Supports per-layer curvature change when `ball_out` differs from `self`.
-    pub fn hyp_act<B: Backend, F>(
-        &self,
-        x: Tensor<B, 2>,
-        act: F,
-        ball_out: &PoincareBall,
-    ) -> Tensor<B, 2>
+    pub fn hyp_act<F>(&self, x: Tensor<2>, act: F, ball_out: &PoincareBall) -> Tensor<2>
     where
-        F: Fn(Tensor<B, 2>) -> Tensor<B, 2>,
+        F: Fn(Tensor<2>) -> Tensor<2>,
     {
         let xt = act(self.log0(x));
         let xt = ball_out.proj_tan0(xt);
@@ -247,7 +233,7 @@ impl PoincareBall {
     /// Bias translation: `x oplus_c b = exp_x( P_{0->x}(log_0(b)) )`.
     ///
     /// Translates `x` by a hyperbolic bias `b` (Ganea et al. 2018, Eq. 28).
-    pub fn bias_translate<B: Backend>(&self, x: Tensor<B, 2>, b: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn bias_translate(&self, x: Tensor<2>, b: Tensor<2>) -> Tensor<2> {
         let x = self.project(x);
         let b = self.project(b);
         let v0 = self.log0(b);
@@ -259,17 +245,14 @@ impl PoincareBall {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::tensor::TensorData;
-    use burn_ndarray::NdArray;
+    use burn::tensor::{Device, TensorData};
     use proptest::prelude::*;
 
-    type B = NdArray<f32>;
-
-    fn dev() -> Device<B> {
-        Device::<B>::default()
+    fn dev() -> Device {
+        Device::flex()
     }
 
-    fn to_burn(v: &[f32], shape: [usize; 2]) -> Tensor<B, 2> {
+    fn to_burn(v: &[f32], shape: [usize; 2]) -> Tensor<2> {
         Tensor::from_data(TensorData::new(v.to_vec(), shape), &dev())
     }
 
@@ -353,8 +336,8 @@ mod tests {
         let v = ball.log0(x.clone());
         let x2 = ball.exp0(v);
 
-        let x_v = x.to_data().to_vec::<f32>().unwrap();
-        let x2_v = x2.to_data().to_vec::<f32>().unwrap();
+        let x_v = x.to_data().try_to_vec::<f32>().unwrap();
+        let x2_v = x2.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&x_v, &x2_v) < 1e-3, "exp0(log0(x)) roundtrip failed");
     }
 
@@ -368,14 +351,14 @@ mod tests {
         let lhs = ball.mobius_add(x.clone(), z.clone());
         let rhs = ball.mobius_add(z, x.clone());
 
-        let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
-        let lhs_v = lhs.to_data().to_vec::<f32>().unwrap();
-        let rhs_v = rhs.to_data().to_vec::<f32>().unwrap();
+        let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
+        let lhs_v = lhs.to_data().try_to_vec::<f32>().unwrap();
+        let rhs_v = rhs.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&x_v, &lhs_v) < 1e-3, "x + 0 != x");
         assert!(l1(&x_v, &rhs_v) < 1e-3, "0 + x != x");
 
         let d = ball.distance(x.clone(), x);
-        let d_v = d.to_data().to_vec::<f32>().unwrap();
+        let d_v = d.to_data().try_to_vec::<f32>().unwrap();
         let d_sum: f32 = d_v.iter().map(|x| x.abs()).sum();
         assert!(d_sum < 1e-3, "d(x,x) should be ~0, got {d_sum}");
     }
@@ -389,15 +372,15 @@ mod tests {
 
         let a = ball.log0(x.clone());
         let b = ball.log_map(o.clone(), x.clone());
-        let a_v = a.to_data().to_vec::<f32>().unwrap();
-        let b_v = b.to_data().to_vec::<f32>().unwrap();
+        let a_v = a.to_data().try_to_vec::<f32>().unwrap();
+        let b_v = b.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&a_v, &b_v) < 1e-3, "log0 != log_map(0, x)");
 
         let v = to_burn(&[0.01, -0.02, 0.03, -0.01, 0.02, -0.03], [2, 3]);
         let a = ball.exp0(v.clone());
         let b = ball.exp_map(o, v);
-        let a_v = a.to_data().to_vec::<f32>().unwrap();
-        let b_v = b.to_data().to_vec::<f32>().unwrap();
+        let a_v = a.to_data().try_to_vec::<f32>().unwrap();
+        let b_v = b.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&a_v, &b_v) < 1e-3, "exp0 != exp_map(0, v)");
     }
 
@@ -410,8 +393,8 @@ mod tests {
         let v = ball.log_map(x.clone(), y.clone());
         let y2 = ball.exp_map(x, v);
 
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
-        let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
+        let y2_v = y2.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&y_v, &y2_v) < 5e-2, "exp_p(log_p(y)) roundtrip failed");
     }
 
@@ -423,8 +406,8 @@ mod tests {
 
         let a = ball.mobius_add(x.clone(), b.clone());
         let c = ball.bias_translate(x, b);
-        let a_v = a.to_data().to_vec::<f32>().unwrap();
-        let c_v = c.to_data().to_vec::<f32>().unwrap();
+        let a_v = a.to_data().try_to_vec::<f32>().unwrap();
+        let c_v = c.to_data().try_to_vec::<f32>().unwrap();
         assert!(
             l1(&a_v, &c_v) < 5e-3,
             "bias_translate should match mobius_add"
@@ -440,23 +423,23 @@ mod tests {
 
         // exp0(0) should be near origin
         let e = ball.exp0(z.clone());
-        let e_v = e.to_data().to_vec::<f32>().unwrap();
+        let e_v = e.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&e_v), "exp0(0) produced non-finite");
         assert!(l1(&e_v, &[0.0; 6]) < 1e-3, "exp0(0) should be ~0");
 
         // log0(0) should be near zero (or at least finite)
         let l = ball.log0(z.clone());
-        let l_v = l.to_data().to_vec::<f32>().unwrap();
+        let l_v = l.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&l_v), "log0(0) produced non-finite");
 
         // distance(0, 0) should be 0
         let d = ball.distance(z.clone(), z.clone());
-        let d_v = d.to_data().to_vec::<f32>().unwrap();
+        let d_v = d.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&d_v), "distance(0, 0) produced non-finite");
 
         // mobius_add(0, 0) should be 0
         let m = ball.mobius_add(z.clone(), z);
-        let m_v = m.to_data().to_vec::<f32>().unwrap();
+        let m_v = m.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&m_v), "mobius_add(0, 0) produced non-finite");
     }
 
@@ -473,20 +456,20 @@ mod tests {
         let y = ball.project(y);
 
         let d = ball.distance(x.clone(), y.clone());
-        let d_v = d.to_data().to_vec::<f32>().unwrap();
+        let d_v = d.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&d_v), "near-boundary distance non-finite");
         assert!(d_v.iter().all(|&v| v >= 0.0), "negative distance");
 
         let v = ball.log_map(x.clone(), y.clone());
-        let v_v = v.to_data().to_vec::<f32>().unwrap();
+        let v_v = v.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&v_v), "near-boundary log_map non-finite");
 
         let y2 = ball.exp_map(x.clone(), v);
-        let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+        let y2_v = y2.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&y2_v), "near-boundary exp_map non-finite");
 
         let m = ball.mobius_add(x, y);
-        let m_v = m.to_data().to_vec::<f32>().unwrap();
+        let m_v = m.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&m_v), "near-boundary mobius_add non-finite");
     }
 
@@ -498,14 +481,14 @@ mod tests {
         let v0 = to_burn(&[0.05, -0.03, 0.02], [1, 3]);
 
         let vx = ball.parallel_transport_0_to_x(x.clone(), v0.clone());
-        let vx_v = vx.to_data().to_vec::<f32>().unwrap();
+        let vx_v = vx.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&vx_v), "parallel transport non-finite");
 
         // Manual check: scale = 2 / lambda_x = (1 - c||x||^2)
-        let x_v = x.to_data().to_vec::<f32>().unwrap();
+        let x_v = x.to_data().try_to_vec::<f32>().unwrap();
         let x_norm_sq: f32 = x_v.iter().map(|a| a * a).sum();
         let expected_scale = 1.0 - ball.c * x_norm_sq;
-        let v0_v = v0.to_data().to_vec::<f32>().unwrap();
+        let v0_v = v0.to_data().try_to_vec::<f32>().unwrap();
         for i in 0..3 {
             let expected = v0_v[i] * expected_scale;
             assert!(
@@ -528,14 +511,14 @@ mod tests {
             let y = ball.project(to_burn(&[0.0, r, 0.0], [1, 3]));
 
             let d = ball.distance(x.clone(), y.clone());
-            let d_v = d.to_data().to_vec::<f32>().unwrap();
+            let d_v = d.to_data().try_to_vec::<f32>().unwrap();
             assert!(all_finite(&d_v), "c={c}: distance non-finite");
             assert!(d_v[0] > 0.0, "c={c}: distance should be positive");
 
             let v = ball.log_map(x.clone(), y.clone());
             let y2 = ball.exp_map(x, v);
-            let y_v = y.to_data().to_vec::<f32>().unwrap();
-            let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+            let y_v = y.to_data().try_to_vec::<f32>().unwrap();
+            let y2_v = y2.to_data().try_to_vec::<f32>().unwrap();
             assert!(all_finite(&y2_v), "c={c}: roundtrip non-finite");
             assert!(
                 l1(&y_v, &y2_v) < 0.1,
@@ -551,7 +534,7 @@ mod tests {
         // Large tangent vector that would overshoot the ball under exp0.
         let v = to_burn(&[5.0, 5.0, 5.0], [1, 3]);
         let v_proj = ball.proj_tan0(v);
-        let v_v = v_proj.to_data().to_vec::<f32>().unwrap();
+        let v_v = v_proj.to_data().try_to_vec::<f32>().unwrap();
         let norm: f32 = v_v.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!(
             norm <= ball.max_norm() + 1e-4,
@@ -560,8 +543,8 @@ mod tests {
         // Small tangent vector should pass through unchanged.
         let v_small = to_burn(&[0.01, -0.01, 0.005], [1, 3]);
         let v_small_proj = ball.proj_tan0(v_small.clone());
-        let a = v_small.to_data().to_vec::<f32>().unwrap();
-        let b = v_small_proj.to_data().to_vec::<f32>().unwrap();
+        let a = v_small.to_data().try_to_vec::<f32>().unwrap();
+        let b = v_small_proj.to_data().try_to_vec::<f32>().unwrap();
         assert!(
             l1(&a, &b) < 1e-5,
             "proj_tan0 should not change small vectors"
@@ -572,11 +555,11 @@ mod tests {
     fn hyp_act_identity_is_close_to_input() {
         let ball = PoincareBall::new(1.0);
         let x = ball.project(to_burn(&[0.1, -0.05, 0.02, 0.03, 0.04, -0.01], [2, 3]));
-        let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
+        let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
 
         // Identity activation: exp0(log0(x)) should round-trip.
         let y = ball.hyp_act(x, |t| t, &ball);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&x_v, &y_v) < 1e-3, "identity hyp_act should round-trip");
     }
 
@@ -585,7 +568,7 @@ mod tests {
         let ball = PoincareBall::new(1.0);
         let x = ball.project(to_burn(&[0.1, -0.05, 0.02, -0.03, 0.04, -0.01], [2, 3]));
         let y = ball.hyp_act(x, |t| t.clamp_min(0.0), &ball);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&y_v), "hyp_act(relu) non-finite");
         // Result should be inside the ball.
         for row in 0..2 {
@@ -608,7 +591,7 @@ mod tests {
         let x = ball_in.project(to_burn(&[0.1, -0.05, 0.02], [1, 3]));
 
         let y = ball_in.hyp_act(x, |t| t.clamp_min(0.0), &ball_out);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(all_finite(&y_v), "curvature-change hyp_act non-finite");
         // Output should be inside ball_out (radius 1/sqrt(2) ~ 0.707).
         let norm: f32 = y_v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -631,12 +614,12 @@ mod tests {
 
         let x = ball.project(to_burn(&x_v, [3, 3]));
         let y = ball.project(to_burn(&y_v, [3, 3]));
-        let x_f = x.clone().to_data().to_vec::<f32>().unwrap();
-        let y_f = y.clone().to_data().to_vec::<f32>().unwrap();
+        let x_f = x.clone().to_data().try_to_vec::<f32>().unwrap();
+        let y_f = y.clone().to_data().try_to_vec::<f32>().unwrap();
 
         // mobius_add
         let z = ball.mobius_add(x.clone(), y.clone());
-        let z_f = z.to_data().to_vec::<f32>().unwrap();
+        let z_f = z.to_data().try_to_vec::<f32>().unwrap();
         for i in 0..3 {
             let xi: Vec<f64> = x_f[i * 3..i * 3 + 3].iter().map(|v| *v as f64).collect();
             let yi: Vec<f64> = y_f[i * 3..i * 3 + 3].iter().map(|v| *v as f64).collect();
@@ -652,7 +635,7 @@ mod tests {
 
         // distance
         let d = ball.distance(x.clone(), y.clone());
-        let d_f = d.to_data().to_vec::<f32>().unwrap();
+        let d_f = d.to_data().try_to_vec::<f32>().unwrap();
         for i in 0..3 {
             let xi: Vec<f64> = x_f[i * 3..i * 3 + 3].iter().map(|v| *v as f64).collect();
             let yi: Vec<f64> = y_f[i * 3..i * 3 + 3].iter().map(|v| *v as f64).collect();
@@ -668,7 +651,7 @@ mod tests {
         // log0/exp0 roundtrip
         let v = ball.log0(x.clone());
         let x2 = ball.exp0(v);
-        let x2_f = x2.to_data().to_vec::<f32>().unwrap();
+        let x2_f = x2.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&x_f, &x2_f) < 1e-3, "exp0(log0(x)) roundtrip mismatch");
     }
 
@@ -692,10 +675,10 @@ mod tests {
             let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
-            let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
-            let y_v = y.clone().to_data().to_vec::<f32>().unwrap();
+            let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
+            let y_v = y.clone().to_data().try_to_vec::<f32>().unwrap();
 
-            let d_burn = ball.distance(x, y).to_data().to_vec::<f32>().unwrap()[0];
+            let d_burn = ball.distance(x, y).to_data().try_to_vec::<f32>().unwrap()[0];
             let xi: Vec<f64> = x_v.iter().map(|v| *v as f64).collect();
             let yi: Vec<f64> = y_v.iter().map(|v| *v as f64).collect();
             let d_ref = ref_distance(c, &xi, &yi) as f32;
@@ -715,11 +698,11 @@ mod tests {
             let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
-            let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
-            let y_v = y.clone().to_data().to_vec::<f32>().unwrap();
+            let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
+            let y_v = y.clone().to_data().try_to_vec::<f32>().unwrap();
 
             let z = ball.mobius_add(x, y);
-            let z_f = z.to_data().to_vec::<f32>().unwrap();
+            let z_f = z.to_data().try_to_vec::<f32>().unwrap();
             let xi: Vec<f64> = x_v.iter().map(|v| *v as f64).collect();
             let yi: Vec<f64> = y_v.iter().map(|v| *v as f64).collect();
             let z_ref: Vec<f32> = ref_mobius_add(c, &xi, &yi).iter().map(|v| *v as f32).collect();
@@ -739,11 +722,11 @@ mod tests {
             let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
-            let y_v = y.clone().to_data().to_vec::<f32>().unwrap();
+            let y_v = y.clone().to_data().try_to_vec::<f32>().unwrap();
 
             let v = ball.log_map(x.clone(), y);
             let y2 = ball.exp_map(x, v);
-            let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+            let y2_v = y2.to_data().try_to_vec::<f32>().unwrap();
 
             prop_assert!(l1(&y_v, &y2_v) < 8e-2,
                 "exp_p(log_p(y)) roundtrip l1={}", l1(&y_v, &y2_v));
@@ -763,10 +746,10 @@ mod tests {
             let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
             let p = ball.project(to_burn(&p_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
-            let p_v = p.clone().to_data().to_vec::<f32>().unwrap();
-            let y_v = y.clone().to_data().to_vec::<f32>().unwrap();
+            let p_v = p.clone().to_data().try_to_vec::<f32>().unwrap();
+            let y_v = y.clone().to_data().try_to_vec::<f32>().unwrap();
 
-            let v_burn = ball.log_map(p, y).to_data().to_vec::<f32>().unwrap();
+            let v_burn = ball.log_map(p, y).to_data().try_to_vec::<f32>().unwrap();
             let pi: Vec<f64> = p_v.iter().map(|v| *v as f64).collect();
             let yi: Vec<f64> = y_v.iter().map(|v| *v as f64).collect();
             let v_ref: Vec<f32> = ref_log_map(c, &pi, &yi).iter().map(|v| *v as f32).collect();
@@ -788,9 +771,9 @@ mod tests {
             let v_f: Vec<f32> = v0.iter().map(|v| *v as f32).collect();
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let v = to_burn(&v_f, [1, 3]);
-            let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
+            let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
 
-            let y_burn = ball.exp_map(x, v).to_data().to_vec::<f32>().unwrap();
+            let y_burn = ball.exp_map(x, v).to_data().try_to_vec::<f32>().unwrap();
             let xi: Vec<f64> = x_v.iter().map(|v| *v as f64).collect();
             let vi: Vec<f64> = v0.clone();
             let y_ref: Vec<f32> = ref_exp_map(c, &xi, &vi).iter().map(|v| *v as f32).collect();
@@ -813,14 +796,14 @@ mod tests {
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
 
-            let d = ball.distance(x.clone(), y.clone()).to_data().to_vec::<f32>().unwrap();
+            let d = ball.distance(x.clone(), y.clone()).to_data().try_to_vec::<f32>().unwrap();
             prop_assert!(all_finite(&d), "near-boundary distance non-finite");
 
             let v = ball.log_map(x.clone(), y.clone());
-            let v_v = v.clone().to_data().to_vec::<f32>().unwrap();
+            let v_v = v.clone().to_data().try_to_vec::<f32>().unwrap();
             prop_assert!(all_finite(&v_v), "near-boundary log_map non-finite");
 
-            let y2 = ball.exp_map(x, v).to_data().to_vec::<f32>().unwrap();
+            let y2 = ball.exp_map(x, v).to_data().try_to_vec::<f32>().unwrap();
             prop_assert!(all_finite(&y2), "near-boundary exp_map non-finite");
         }
 
@@ -842,11 +825,11 @@ mod tests {
             let y_f: Vec<f32> = y0.iter().map(|v| *v as f32).collect();
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
-            let y_v = y.clone().to_data().to_vec::<f32>().unwrap();
+            let y_v = y.clone().to_data().try_to_vec::<f32>().unwrap();
 
             let v = ball.log_map(x.clone(), y);
             let y2 = ball.exp_map(x, v);
-            let y2_v = y2.to_data().to_vec::<f32>().unwrap();
+            let y2_v = y2.to_data().try_to_vec::<f32>().unwrap();
 
             prop_assert!(all_finite(&y2_v), "c={c}: roundtrip non-finite");
             prop_assert!(l1(&y_v, &y2_v) < 0.15,
@@ -864,8 +847,8 @@ mod tests {
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let y = ball.project(to_burn(&y_f, [1, 3]));
 
-            let dxy = ball.distance(x.clone(), y.clone()).to_data().to_vec::<f32>().unwrap()[0];
-            let dyx = ball.distance(y, x).to_data().to_vec::<f32>().unwrap()[0];
+            let dxy = ball.distance(x.clone(), y.clone()).to_data().try_to_vec::<f32>().unwrap()[0];
+            let dyx = ball.distance(y, x).to_data().try_to_vec::<f32>().unwrap()[0];
 
             prop_assert!((dxy - dyx).abs() < 1e-4,
                 "distance not symmetric: d(x,y)={dxy} d(y,x)={dyx}");
@@ -889,9 +872,9 @@ mod tests {
             let y = ball.project(to_burn(&y_f, [1, 3]));
             let z = ball.project(to_burn(&z_f, [1, 3]));
 
-            let dxy = ball.distance(x.clone(), y.clone()).to_data().to_vec::<f32>().unwrap()[0];
-            let dyz = ball.distance(y, z.clone()).to_data().to_vec::<f32>().unwrap()[0];
-            let dxz = ball.distance(x, z).to_data().to_vec::<f32>().unwrap()[0];
+            let dxy = ball.distance(x.clone(), y.clone()).to_data().try_to_vec::<f32>().unwrap()[0];
+            let dyz = ball.distance(y, z.clone()).to_data().try_to_vec::<f32>().unwrap()[0];
+            let dxz = ball.distance(x, z).to_data().try_to_vec::<f32>().unwrap()[0];
 
             // d(x,z) <= d(x,y) + d(y,z) + tolerance for f32
             prop_assert!(dxz <= dxy + dyz + 5e-2,
@@ -906,8 +889,8 @@ mod tests {
             let x = to_burn(&x_f, [1, 3]);
             let p1 = ball.project(x);
             let p2 = ball.project(p1.clone());
-            let a = p1.to_data().to_vec::<f32>().unwrap();
-            let b = p2.to_data().to_vec::<f32>().unwrap();
+            let a = p1.to_data().try_to_vec::<f32>().unwrap();
+            let b = p2.to_data().try_to_vec::<f32>().unwrap();
             prop_assert!(l1(&a, &b) < 1e-4, "projection not idempotent: l1={}", l1(&a, &b));
 
             // Projected point is inside the ball.
@@ -925,12 +908,12 @@ mod tests {
             let x_f: Vec<f32> = x0.iter().map(|v| *v as f32).collect();
             let x = ball.project(to_burn(&x_f, [1, 3]));
             let z = to_burn(&[0.0f32; 3], [1, 3]);
-            let x_v = x.clone().to_data().to_vec::<f32>().unwrap();
+            let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
 
             let lhs = ball.mobius_add(x.clone(), z.clone());
             let rhs = ball.mobius_add(z, x);
-            let lhs_v = lhs.to_data().to_vec::<f32>().unwrap();
-            let rhs_v = rhs.to_data().to_vec::<f32>().unwrap();
+            let lhs_v = lhs.to_data().try_to_vec::<f32>().unwrap();
+            let rhs_v = rhs.to_data().try_to_vec::<f32>().unwrap();
 
             prop_assert!(l1(&x_v, &lhs_v) < 1e-3, "x+0 != x: l1={}", l1(&x_v, &lhs_v));
             prop_assert!(l1(&x_v, &rhs_v) < 1e-3, "0+x != x: l1={}", l1(&x_v, &rhs_v));

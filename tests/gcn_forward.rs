@@ -1,26 +1,18 @@
 //! Numerical integration tests for the public `GCNConv` forward paths.
 
-#[cfg(feature = "metal")]
-use burn::backend::Autodiff;
-#[cfg(feature = "metal")]
-use burn::backend::Wgpu;
 use burn::module::{Module, Param};
 use burn::nn::Linear;
-use burn::tensor::backend::Backend;
-use burn::tensor::ops::Device;
-use burn::tensor::{Tensor, TensorData};
-use burn_ndarray::NdArray;
+use burn::tensor::Device;
 #[cfg(feature = "metal")]
-use cubecl::wgpu::WgpuDevice;
+use burn::tensor::DeviceKind;
+use burn::tensor::{Tensor, TensorData};
 use ricci::GCNConv;
 
-type B = NdArray<f32>;
-
-fn dev() -> Device<B> {
-    Device::<B>::default()
+fn dev() -> Device {
+    Device::flex()
 }
 
-fn fixed_layer<B: Backend>(device: &Device<B>) -> GCNConv<B> {
+fn fixed_layer(device: &Device) -> GCNConv {
     let weight = Tensor::from_data(
         TensorData::new(vec![2.0f32, -1.0, 0.5, 3.0], [2, 2]),
         device,
@@ -32,7 +24,7 @@ fn fixed_layer<B: Backend>(device: &Device<B>) -> GCNConv<B> {
     })
 }
 
-fn inputs<B: Backend>(device: &Device<B>) -> (Tensor<B, 2>, Tensor<B, 2>) {
+fn inputs(device: &Device) -> (Tensor<2>, Tensor<2>) {
     let x = Tensor::from_data(
         TensorData::new(vec![1.0f32, 2.0, -1.0, 4.0, 3.0, 0.5], [3, 2]),
         device,
@@ -45,8 +37,8 @@ fn inputs<B: Backend>(device: &Device<B>) -> (Tensor<B, 2>, Tensor<B, 2>) {
     (x, adj)
 }
 
-fn assert_close(got: Tensor<B, 2>, expected: &[f32]) {
-    let got = got.into_data().to_vec::<f32>().unwrap();
+fn assert_close(got: Tensor<2>, expected: &[f32]) {
+    let got = got.into_data().try_to_vec::<f32>().unwrap();
     assert_eq!(got.len(), expected.len());
     for (i, (got, expected)) in got.iter().zip(expected).enumerate() {
         assert!(
@@ -108,16 +100,13 @@ fn gcn_record_round_trip_preserves_both_forward_paths() {
 #[test]
 #[ignore = "requires a local Metal device; run with --features metal -- --ignored gcn_metal"]
 fn gcn_metal_matches_ndarray_forward_and_input_weight_gradients() {
-    type Cpu = Autodiff<NdArray<f32>>;
-    type Metal = Autodiff<Wgpu<f32, i32>>;
-
-    let cpu_device = Device::<Cpu>::default();
-    let metal_device = WgpuDevice::IntegratedGpu(0);
+    let cpu_device = Device::flex().autodiff();
+    let metal_device = Device::metal(DeviceKind::IntegratedGpu(0)).autodiff();
     eprintln!("GCN Metal parity device: {metal_device:?}");
-    let cpu_layer = fixed_layer::<Cpu>(&cpu_device);
-    let metal_layer = fixed_layer::<Metal>(&metal_device);
-    let (cpu_x, cpu_adj) = inputs::<Cpu>(&cpu_device);
-    let (metal_x, metal_adj) = inputs::<Metal>(&metal_device);
+    let cpu_layer = fixed_layer(&cpu_device);
+    let metal_layer = fixed_layer(&metal_device);
+    let (cpu_x, cpu_adj) = inputs(&cpu_device);
+    let (metal_x, metal_adj) = inputs(&metal_device);
     let cpu_x = cpu_x.require_grad();
     let metal_x = metal_x.require_grad();
     let cpu_weight = cpu_layer.linear().weight.val();
@@ -129,8 +118,12 @@ fn gcn_metal_matches_ndarray_forward_and_input_weight_gradients() {
     let metal_grads = metal_output.clone().sum().backward();
 
     assert_slice_close(
-        metal_output.into_data().to_vec::<f32>().unwrap().as_slice(),
-        &cpu_output.into_data().to_vec::<f32>().unwrap(),
+        metal_output
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap()
+            .as_slice(),
+        &cpu_output.into_data().try_to_vec::<f32>().unwrap(),
         1e-5,
     );
     assert_slice_close(
@@ -138,14 +131,14 @@ fn gcn_metal_matches_ndarray_forward_and_input_weight_gradients() {
             .grad(&metal_grads)
             .unwrap()
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap()
             .as_slice(),
         &cpu_x
             .grad(&cpu_grads)
             .unwrap()
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap(),
         1e-5,
     );
@@ -154,14 +147,14 @@ fn gcn_metal_matches_ndarray_forward_and_input_weight_gradients() {
             .grad(&metal_grads)
             .unwrap()
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap()
             .as_slice(),
         &cpu_weight
             .grad(&cpu_grads)
             .unwrap()
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap(),
         1e-5,
     );

@@ -10,18 +10,21 @@
 //! exact, and the backward routes gradient only to each segment's winning
 //! element, which is the almost-everywhere-correct gradient of max.
 
-use burn::tensor::backend::Backend;
-#[cfg(test)]
-use burn::tensor::ops::Device;
-use burn::tensor::{Int, Tensor as BurnTensor, TensorData};
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-use burn::tensor::{Shape, TensorPrimitive};
+use burn::tensor::Shape;
+use burn::tensor::{FloatDType, Int, Tensor as BurnTensor, TensorData};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-use burn::backend::wgpu::{
-    BoolElement, CubeBackend, CubeDim, CubeTensor, FloatElement, IntElement, WgpuRuntime,
+use burn::backend::wgpu::{CubeBackend, CubeDim, CubeTensor};
+#[cfg(any(feature = "wgpu", feature = "metal"))]
+use burn::backend::{
+    autodiff::{checkpoint::strategy::CheckpointStrategy, Autodiff},
+    backend_extension,
+    cubecl::dtype_to_elem_type,
+    tensor::{FloatTensor, IntTensor},
+    Dispatch, TensorMetadata,
 };
 #[cfg(any(feature = "wgpu", feature = "metal"))]
 use burn::cubecl::{calculate_cube_count_elemwise, prelude::*};
@@ -113,8 +116,8 @@ fn segment_argmax_min_kernel<F: Float, I: Numeric>(
     offsets: &Tensor<I>,
     idx_max: &mut Tensor<I>,
     idx_min: &mut Tensor<I>,
-    mask: &mut Tensor<F>,
-    #[define(F, I)] _dtypes: [StorageType; 2],
+    mask: &mut Tensor<I>,
+    #[define(F, I)] _dtypes: [ElemType; 2],
 ) {
     if ABSOLUTE_POS >= idx_max.len() {
         terminate!();
@@ -131,7 +134,7 @@ fn segment_argmax_min_kernel<F: Float, I: Numeric>(
     if start == end {
         idx_max[ABSOLUTE_POS] = I::from_int(0);
         idx_min[ABSOLUTE_POS] = I::from_int(0);
-        mask[ABSOLUTE_POS] = F::from_int(0);
+        mask[ABSOLUTE_POS] = I::from_int(0);
         terminate!();
     }
 
@@ -159,23 +162,68 @@ fn segment_argmax_min_kernel<F: Float, I: Numeric>(
 
     idx_max[ABSOLUTE_POS] = I::cast_from(best_max_edge);
     idx_min[ABSOLUTE_POS] = I::cast_from(best_min_edge);
-    mask[ABSOLUTE_POS] = F::from_int(1);
+    mask[ABSOLUTE_POS] = I::from_int(1);
 }
 
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-type WgpuBackend<F, I, BT> = CubeBackend<WgpuRuntime, F, I, BT>;
+#[backend_extension(Autodiff, Cube)]
+trait SegmentArgMaxMinBackend: burn::backend::Backend {
+    fn segment_argmax_min(
+        values: FloatTensor<Self>,
+        edge_order: IntTensor<Self>,
+        offsets: IntTensor<Self>,
+    ) -> (IntTensor<Self>, IntTensor<Self>, IntTensor<Self>);
+}
+
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-type WgpuFloatTensor<F, I, BT, const D: usize> = BurnTensor<WgpuBackend<F, I, BT>, D>;
+impl SegmentArgMaxMinBackend for CubeBackend {
+    fn segment_argmax_min(
+        values: FloatTensor<Self>,
+        edge_order: IntTensor<Self>,
+        offsets: IntTensor<Self>,
+    ) -> (IntTensor<Self>, IntTensor<Self>, IntTensor<Self>) {
+        let shape = values.shape();
+        let [q, _, d] = shape.dims();
+        let num_segments = offsets.shape().num_elements() - 1;
+        let output_shape = Shape::new([q, num_segments, d]);
+        let idx_max = empty_like(&values, output_shape.clone(), edge_order.dtype);
+        let idx_min = empty_like(&values, output_shape.clone(), edge_order.dtype);
+        let mask = empty_like(&values, output_shape, edge_order.dtype);
+        let client = values.client.clone();
+        let cube_dim = CubeDim::new(&client, q * num_segments * d);
+        let cube_count = calculate_cube_count_elemwise(&client, q * num_segments * d, cube_dim);
+        let dtypes = [
+            dtype_to_elem_type(values.dtype),
+            dtype_to_elem_type(edge_order.dtype),
+        ];
+
+        segment_argmax_min_kernel::launch(
+            &client,
+            cube_count,
+            cube_dim,
+            values.into_tensor_arg(),
+            edge_order.into_tensor_arg(),
+            offsets.into_tensor_arg(),
+            idx_max.clone().into_tensor_arg(),
+            idx_min.clone().into_tensor_arg(),
+            mask.clone().into_tensor_arg(),
+            dtypes,
+        );
+
+        (idx_max, idx_min, mask)
+    }
+}
+
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-type WgpuIntTensor<F, I, BT, const D: usize> = BurnTensor<WgpuBackend<F, I, BT>, D, Int>;
-#[cfg(any(feature = "wgpu", feature = "metal"))]
-type WgpuScatterIndices<F, I, BT> = (
-    WgpuIntTensor<F, I, BT, 3>,
-    WgpuIntTensor<F, I, BT, 3>,
-    WgpuFloatTensor<F, I, BT, 3>,
-);
-#[cfg(any(feature = "wgpu", feature = "metal"))]
-type WgpuScatterValues<F, I, BT> = (WgpuFloatTensor<F, I, BT, 3>, WgpuFloatTensor<F, I, BT, 3>);
+impl<B: SegmentArgMaxMinBackend, C: CheckpointStrategy> SegmentArgMaxMinBackend for Autodiff<B, C> {
+    fn segment_argmax_min(
+        values: FloatTensor<Self>,
+        edge_order: IntTensor<Self>,
+        offsets: IntTensor<Self>,
+    ) -> (IntTensor<Self>, IntTensor<Self>, IntTensor<Self>) {
+        B::segment_argmax_min(values.into_primitive(), edge_order, offsets)
+    }
+}
 
 /// Computes exact segment max/min winner indices on WGPU/Metal.
 ///
@@ -184,57 +232,29 @@ type WgpuScatterValues<F, I, BT> = (WgpuFloatTensor<F, I, BT, 3>, WgpuFloatTenso
 /// callers should gather from the original floating tensor with the returned
 /// indices so Burn routes gradients to the winning edge values.
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-pub fn scatter_max_min_indices_wgpu<F, I, BT>(
-    values: WgpuFloatTensor<F, I, BT, 3>,
+pub fn scatter_max_min_indices_wgpu(
+    values: BurnTensor<3>,
     segments: &[usize],
     num_segments: usize,
-) -> WgpuScatterIndices<F, I, BT>
-where
-    F: FloatElement,
-    I: IntElement,
-    BT: BoolElement,
-{
-    let [q, e, d] = values.dims();
+) -> (BurnTensor<3, Int>, BurnTensor<3, Int>, BurnTensor<3>) {
+    let [_, e, _] = values.dims();
     assert_eq!(e, segments.len(), "one segment id per edge");
     let (edge_order, offsets) = segment_csr(segments, num_segments);
     let device = values.device();
-    let edge_order = BurnTensor::<WgpuBackend<F, I, BT>, 1, Int>::from_data(
-        TensorData::new(edge_order, [e]),
-        &device,
-    );
-    let offsets = BurnTensor::<WgpuBackend<F, I, BT>, 1, Int>::from_data(
-        TensorData::new(offsets, [num_segments + 1]),
-        &device,
-    );
-
-    let values = values.into_primitive().tensor();
-    let edge_order = edge_order.into_primitive();
-    let offsets = offsets.into_primitive();
-    let shape = Shape::new([q, num_segments, d]);
-    let idx_max = empty_like(&values, shape.clone(), I::dtype());
-    let idx_min = empty_like(&values, shape.clone(), I::dtype());
-    let mask = empty_like(&values, shape, F::dtype());
-    let cube_dim = CubeDim::new(&values.client, q * num_segments * d);
-    let cube_count = calculate_cube_count_elemwise(&values.client, q * num_segments * d, cube_dim);
-    let dtypes = [values.dtype.into(), edge_order.dtype.into()];
-
-    segment_argmax_min_kernel::launch::<WgpuRuntime>(
-        &values.client,
-        cube_count,
-        cube_dim,
-        values.clone().into_tensor_arg(),
-        edge_order.into_tensor_arg(),
-        offsets.into_tensor_arg(),
-        idx_max.clone().into_tensor_arg(),
-        idx_min.clone().into_tensor_arg(),
-        mask.clone().into_tensor_arg(),
-        dtypes,
+    let edge_order = BurnTensor::<1, Int>::from_data(TensorData::new(edge_order, [e]), &device);
+    let offsets =
+        BurnTensor::<1, Int>::from_data(TensorData::new(offsets, [num_segments + 1]), &device);
+    let dtype: FloatDType = values.dtype().into();
+    let (idx_max, idx_min, mask) = <Dispatch as SegmentArgMaxMinBackend>::segment_argmax_min(
+        values.into_dispatch(),
+        edge_order.into_dispatch(),
+        offsets.into_dispatch(),
     );
 
     (
-        BurnTensor::from_primitive(idx_max),
-        BurnTensor::from_primitive(idx_min),
-        BurnTensor::from_primitive(TensorPrimitive::Float(mask)),
+        BurnTensor::from_dispatch(idx_max),
+        BurnTensor::from_dispatch(idx_min),
+        BurnTensor::<3, Int>::from_dispatch(mask).cast(dtype),
     )
 }
 
@@ -244,16 +264,11 @@ where
 /// The returned values are produced with Burn `gather`, so gradients follow
 /// the same winner-only path as [`scatter_max_min`].
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-pub fn scatter_max_min_wgpu<F, I, BT>(
-    values: WgpuFloatTensor<F, I, BT, 3>,
+pub fn scatter_max_min_wgpu(
+    values: BurnTensor<3>,
     segments: &[usize],
     num_segments: usize,
-) -> WgpuScatterValues<F, I, BT>
-where
-    F: FloatElement,
-    I: IntElement,
-    BT: BoolElement,
-{
+) -> (BurnTensor<3>, BurnTensor<3>) {
     let (idx_max, idx_min, mask) =
         scatter_max_min_indices_wgpu(values.clone(), segments, num_segments);
     (
@@ -263,11 +278,7 @@ where
 }
 
 #[cfg(any(feature = "wgpu", feature = "metal"))]
-fn empty_like(
-    values: &CubeTensor<WgpuRuntime>,
-    shape: Shape,
-    dtype: burn::tensor::DType,
-) -> CubeTensor<WgpuRuntime> {
+fn empty_like(values: &CubeTensor, shape: Shape, dtype: burn::tensor::DType) -> CubeTensor {
     let handle = values.client.empty(shape.num_elements() * dtype.size());
     CubeTensor::new_contiguous(
         values.client.clone(),
@@ -314,16 +325,16 @@ fn segment_csr(segments: &[usize], num_segments: usize) -> (Vec<i64>, Vec<i64>) 
 ///
 /// Differentiable in `values`: gradient flows to each segment's argmax
 /// element only.
-pub fn scatter_max<B: Backend>(
-    values: BurnTensor<B, 3>,
+pub fn scatter_max(
+    values: BurnTensor<3>,
     segments: &[usize],
     num_segments: usize,
     fill: f32,
-) -> BurnTensor<B, 3> {
+) -> BurnTensor<3> {
     let [q, e, d] = values.dims();
     assert_eq!(e, segments.len(), "one segment id per edge");
     let snapshot_start = Instant::now();
-    let host: Vec<f32> = values.clone().into_data().to_vec().unwrap();
+    let host: Vec<f64> = values.clone().into_data().try_into_vec_as().unwrap();
     let snapshot = snapshot_start.elapsed();
     let scan_start = Instant::now();
     // Argmax edge per (query, segment, dim); -1 marks an empty segment.
@@ -343,12 +354,14 @@ pub fn scatter_max<B: Backend>(
     let scan = scan_start.elapsed();
     let gather_start = Instant::now();
     let device = values.device();
+    let dtype: FloatDType = values.dtype().into();
     let mask: Vec<f32> = arg.iter().map(|&a| if a < 0 { 0.0 } else { 1.0 }).collect();
     let idx: Vec<i64> = arg.into_iter().map(|a| a.max(0)).collect();
     let idx =
-        BurnTensor::<B, 1, Int>::from_data(TensorData::new(idx, [q * num_segments * d]), &device)
+        BurnTensor::<1, Int>::from_data(TensorData::new(idx, [q * num_segments * d]), &device)
             .reshape([q, num_segments, d]);
-    let mask = BurnTensor::<B, 3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device);
+    let mask = BurnTensor::<3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device)
+        .cast(dtype);
     let gathered = values.gather(1, idx);
     let out = gathered * mask.clone() + (mask * (-1.0) + 1.0) * fill;
     record_scatter_metrics(q * e * d, snapshot, scan, gather_start.elapsed());
@@ -361,15 +374,15 @@ pub fn scatter_max<B: Backend>(
 /// makes that the conventional choice). Prefer this over separate
 /// [`scatter_max`] + [`scatter_min`] calls in hot loops: the snapshot of
 /// `values` is the dominant cost and here it is paid once.
-pub fn scatter_max_min<B: Backend>(
-    values: BurnTensor<B, 3>,
+pub fn scatter_max_min(
+    values: BurnTensor<3>,
     segments: &[usize],
     num_segments: usize,
-) -> (BurnTensor<B, 3>, BurnTensor<B, 3>) {
+) -> (BurnTensor<3>, BurnTensor<3>) {
     let [q, e, d] = values.dims();
     assert_eq!(e, segments.len(), "one segment id per edge");
     let snapshot_start = Instant::now();
-    let host: Vec<f32> = values.clone().into_data().to_vec().unwrap();
+    let host: Vec<f64> = values.clone().into_data().try_into_vec_as().unwrap();
     let snapshot = snapshot_start.elapsed();
     let scan_start = Instant::now();
     let mut arg_max = vec![-1i64; q * num_segments * d];
@@ -394,16 +407,15 @@ pub fn scatter_max_min<B: Backend>(
     let scan = scan_start.elapsed();
     let gather_start = Instant::now();
     let device = values.device();
+    let dtype: FloatDType = values.dtype().into();
     let pick = |arg: Vec<i64>| {
         let mask: Vec<f32> = arg.iter().map(|&a| if a < 0 { 0.0 } else { 1.0 }).collect();
         let idx: Vec<i64> = arg.into_iter().map(|a| a.max(0)).collect();
-        let idx = BurnTensor::<B, 1, Int>::from_data(
-            TensorData::new(idx, [q * num_segments * d]),
-            &device,
-        )
-        .reshape([q, num_segments, d]);
-        let mask =
-            BurnTensor::<B, 3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device);
+        let idx =
+            BurnTensor::<1, Int>::from_data(TensorData::new(idx, [q * num_segments * d]), &device)
+                .reshape([q, num_segments, d]);
+        let mask = BurnTensor::<3>::from_data(TensorData::new(mask, [q, num_segments, d]), &device)
+            .cast(dtype);
         values.clone().gather(1, idx) * mask
     };
     let out = (pick(arg_max), pick(arg_min));
@@ -413,28 +425,25 @@ pub fn scatter_max_min<B: Backend>(
 
 /// Segment minimum over an edge list: `-scatter_max(-values)`, with the
 /// same fill and gradient-routing semantics.
-pub fn scatter_min<B: Backend>(
-    values: BurnTensor<B, 3>,
+pub fn scatter_min(
+    values: BurnTensor<3>,
     segments: &[usize],
     num_segments: usize,
     fill: f32,
-) -> BurnTensor<B, 3> {
+) -> BurnTensor<3> {
     scatter_max(values.neg(), segments, num_segments, -fill).neg()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn::backend::Autodiff;
-    use burn_ndarray::NdArray;
+    use burn::tensor::Device;
 
-    type B = NdArray<f32>;
-
-    fn dev() -> Device<B> {
-        Device::<B>::default()
+    fn dev() -> Device {
+        Device::default()
     }
 
-    fn t3(data: Vec<f32>, shape: [usize; 3]) -> BurnTensor<B, 3> {
+    fn t3(data: Vec<f32>, shape: [usize; 3]) -> BurnTensor<3> {
         BurnTensor::from_data(TensorData::new(data, shape), &dev())
     }
 
@@ -454,7 +463,7 @@ mod tests {
             [2, 4, 2],
         );
         let out = scatter_max(vals, &segs, 3, 0.0);
-        let v: Vec<f32> = out.into_data().to_vec().unwrap();
+        let v: Vec<f32> = out.into_data().try_into_vec().unwrap();
         // q0: seg0 = max(e0, e2) = [3, -2]; seg1 = max(e1, e3) = [5, 0.5];
         // seg2 empty = fill 0.
         assert_eq!(&v[0..6], &[3.0, -2.0, 5.0, 0.5, 0.0, 0.0]);
@@ -467,7 +476,7 @@ mod tests {
         let segs = [0usize, 0, 1];
         let vals = t3(vec![1.0, 5.0, -2.0, 4.0, 3.0, 0.0], [1, 3, 2]);
         let out = scatter_min(vals, &segs, 3, 9.0);
-        let v: Vec<f32> = out.into_data().to_vec().unwrap();
+        let v: Vec<f32> = out.into_data().try_into_vec().unwrap();
         assert_eq!(v, vec![-2.0, 4.0, 3.0, 0.0, 9.0, 9.0]);
     }
 
@@ -486,12 +495,12 @@ mod tests {
         let mx_ref = scatter_max(vals.clone(), &segs, 3, 0.0);
         let mn_ref = scatter_min(vals, &segs, 3, 0.0);
         assert_eq!(
-            mx.into_data().to_vec::<f32>().unwrap(),
-            mx_ref.into_data().to_vec::<f32>().unwrap()
+            mx.into_data().try_into_vec::<f32>().unwrap(),
+            mx_ref.into_data().try_into_vec::<f32>().unwrap()
         );
         assert_eq!(
-            mn.into_data().to_vec::<f32>().unwrap(),
-            mn_ref.into_data().to_vec::<f32>().unwrap()
+            mn.into_data().try_into_vec::<f32>().unwrap(),
+            mn_ref.into_data().try_into_vec::<f32>().unwrap()
         );
     }
 
@@ -499,17 +508,21 @@ mod tests {
     /// element: d(sum of maxes)/d(values) is one-hot per segment per dim.
     #[test]
     fn gradient_reaches_argmax_only() {
-        type A = Autodiff<NdArray<f32>>;
-        let device = Device::<A>::default();
+        let device = Device::default().autodiff();
         let segs = [0usize, 0, 0];
-        let vals = BurnTensor::<A, 3>::from_data(
+        let vals = BurnTensor::<3>::from_data(
             TensorData::new(vec![1.0f32, 9.0, 5.0, 2.0, 3.0, 4.0], [1, 3, 2]),
             &device,
         )
         .require_grad();
         let out = scatter_max(vals.clone(), &segs, 1, 0.0);
         let grads = out.sum().backward();
-        let g: Vec<f32> = vals.grad(&grads).unwrap().into_data().to_vec().unwrap();
+        let g: Vec<f32> = vals
+            .grad(&grads)
+            .unwrap()
+            .into_data()
+            .try_into_vec()
+            .unwrap();
         // dim 0 winner: edge 1 (5.0); dim 1 winner: edge 0 (9.0).
         assert_eq!(g, vec![0.0, 1.0, 1.0, 0.0, 0.0, 0.0]);
     }
@@ -517,10 +530,9 @@ mod tests {
     #[cfg(any(feature = "wgpu", feature = "metal"))]
     #[test]
     fn wgpu_matches_host_fused_max_min() {
-        type G = burn::backend::Wgpu<f32, i32>;
-        let device = Device::<G>::default();
+        let device = Device::default();
         let segs = [0usize, 1, 0, 1];
-        let vals = BurnTensor::<G, 3>::from_data(
+        let vals = BurnTensor::<3>::from_data(
             TensorData::new(
                 vec![
                     1.0, 2.0, 5.0, 0.5, 5.0, -7.0, 4.0, 0.5, -1.0, 2.0, -5.0, -0.5, -3.0, 7.0,
@@ -533,12 +545,34 @@ mod tests {
         let (mx, mn) = scatter_max_min_wgpu(vals.clone(), &segs, 3);
         let (mx_ref, mn_ref) = scatter_max_min(vals, &segs, 3);
         assert_eq!(
-            mx.into_data().to_vec::<f32>().unwrap(),
-            mx_ref.into_data().to_vec::<f32>().unwrap()
+            mx.into_data().try_into_vec::<f32>().unwrap(),
+            mx_ref.into_data().try_into_vec::<f32>().unwrap()
         );
         assert_eq!(
-            mn.into_data().to_vec::<f32>().unwrap(),
-            mn_ref.into_data().to_vec::<f32>().unwrap()
+            mn.into_data().try_into_vec::<f32>().unwrap(),
+            mn_ref.into_data().try_into_vec::<f32>().unwrap()
         );
+    }
+
+    /// The device-side index selection stays outside the gradient graph while
+    /// gathers from the original values route gradients to its extrema.
+    #[cfg(any(feature = "wgpu", feature = "metal"))]
+    #[test]
+    fn wgpu_gradient_reaches_max_and_min_winners() {
+        let device = Device::default().autodiff();
+        let values =
+            BurnTensor::<3>::from_data(TensorData::new(vec![1.0f32, 5.0, 3.0], [1, 3, 1]), &device)
+                .require_grad();
+
+        let (max, min) = scatter_max_min_wgpu(values.clone(), &[0, 0, 0], 1);
+        let grads = (max + min).sum().backward();
+        let grad: Vec<f32> = values
+            .grad(&grads)
+            .unwrap()
+            .into_data()
+            .try_into_vec()
+            .unwrap();
+
+        assert_eq!(grad, vec![1.0, 1.0, 0.0]);
     }
 }

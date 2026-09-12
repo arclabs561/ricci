@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** migrated to the pinned Burn 0.22 development revision. Public
+  tensor values are now runtime-dispatched `Tensor<D>` values, without a
+  caller-supplied `Backend` type parameter; code using `Tensor<B, D>` must be
+  updated accordingly.
+- The development branch requires Rust 1.95. CPU code uses `Device::flex()`;
+  Metal training code uses `Device::metal(...).autodiff()` with the `metal`
+  feature.
+
 ## [0.10.0] - 2026-09-10
 
 ### Changed

@@ -13,10 +13,7 @@
 //! The adjacencies come back unnormalized (an edge is present or not);
 //! normalization is the caller's choice, as with every conv in this crate.
 
-use burn::tensor::backend::Backend;
-#[cfg(test)]
-use burn::tensor::ops::Device;
-use burn::tensor::{Tensor, TensorData};
+use burn::tensor::{Device, Tensor, TensorData};
 
 /// Index of the tail-to-head interaction adjacency in the returned stack.
 pub const T2H: usize = 0;
@@ -40,11 +37,11 @@ pub const T2T: usize = 3;
 ///
 /// Out-of-range relation ids are ignored; entity ids only need to be
 /// consistent, not dense.
-pub fn relation_graph<B: Backend>(
+pub fn relation_graph(
     triples: &[(usize, usize, usize)],
     num_relations: usize,
-    device: &B::Device,
-) -> [Tensor<B, 2>; 4] {
+    device: &Device,
+) -> [Tensor<2>; 4] {
     use std::collections::HashMap;
     let n = 2 * num_relations;
     // Role sets per relation node: which entities appear as head / tail.
@@ -118,13 +115,13 @@ pub struct RelationGraphStats {
 }
 
 /// Compute [`RelationGraphStats`] for a stack built by [`relation_graph`].
-pub fn interaction_stats<B: Backend>(adjs: &[Tensor<B, 2>; 4]) -> RelationGraphStats {
+pub fn interaction_stats(adjs: &[Tensor<2>; 4]) -> RelationGraphStats {
     let n = adjs[0].dims()[0];
     let mut edges = [0usize; 4];
     let mut loops = [0usize; 4];
     let mut touched = vec![false; n];
     for (k, adj) in adjs.iter().enumerate() {
-        let v: Vec<f32> = adj.clone().into_data().to_vec().unwrap();
+        let v: Vec<f32> = adj.clone().into_data().try_to_vec().unwrap();
         for i in 0..n {
             for j in 0..n {
                 if v[i * n + j] != 0.0 {
@@ -149,17 +146,13 @@ pub fn interaction_stats<B: Backend>(adjs: &[Tensor<B, 2>; 4]) -> RelationGraphS
 #[cfg(test)]
 mod tests {
     use super::*;
-    use burn_ndarray::NdArray;
-
-    type B = NdArray<f32>;
-
-    fn dev() -> Device<B> {
-        Device::<B>::default()
+    fn dev() -> Device {
+        Device::flex()
     }
 
-    fn at(m: &Tensor<B, 2>, i: usize, j: usize) -> f32 {
+    fn at(m: &Tensor<2>, i: usize, j: usize) -> f32 {
         let n = m.dims()[1];
-        let v: Vec<f32> = m.clone().into_data().to_vec().unwrap();
+        let v: Vec<f32> = m.clone().into_data().try_to_vec().unwrap();
         v[i * n + j]
     }
 
@@ -171,7 +164,7 @@ mod tests {
     #[test]
     fn chained_triples_interactions_by_hand() {
         let triples = [(0usize, 0usize, 1usize), (1, 1, 2)];
-        let [t2h, h2h, h2t, t2t] = relation_graph::<B>(&triples, 2, &dev());
+        let [t2h, h2h, h2t, t2t] = relation_graph(&triples, 2, &dev());
         // Entity 1: tails = {r0, r1_inv=3}, heads = {r1, r0_inv=2}.
         assert_eq!(at(&t2h, 0, 1), 1.0, "tail of r0 is head of r1");
         assert_eq!(at(&t2h, 0, 2), 1.0, "tail of r0 is head of r0_inv");
@@ -190,14 +183,14 @@ mod tests {
     #[test]
     fn stats_flag_isolated_relations() {
         let triples = [(0usize, 0usize, 1usize), (1, 1, 2)];
-        let g = relation_graph::<B>(&triples, 2, &dev());
+        let g = relation_graph(&triples, 2, &dev());
         let s = interaction_stats(&g);
         assert_eq!(s.nodes, 4);
         assert_eq!(s.isolated_nodes, 0);
         assert!(s.edges_per_type.iter().sum::<usize>() > 0);
 
         // Declare 3 relations but only use 2: r2 and r2_inv are isolated.
-        let g = relation_graph::<B>(&triples, 3, &dev());
+        let g = relation_graph(&triples, 3, &dev());
         let s = interaction_stats(&g);
         assert_eq!(s.nodes, 6);
         assert_eq!(s.isolated_nodes, 2, "unused relation + its inverse");
@@ -212,8 +205,8 @@ mod tests {
             .iter()
             .map(|&(h, r, t)| (h, 1 - r, t)) // swap relation ids 0 <-> 1
             .collect();
-        let a = relation_graph::<B>(&orig, 2, &dev());
-        let b = relation_graph::<B>(&renamed, 2, &dev());
+        let a = relation_graph(&orig, 2, &dev());
+        let b = relation_graph(&renamed, 2, &dev());
         // Permutation on 4 nodes: 0<->1 and inverses 2<->3.
         let p = [1usize, 0, 3, 2];
         for k in 0..4 {

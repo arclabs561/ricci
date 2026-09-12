@@ -2,10 +2,7 @@
 
 use burn::module::{Module, Param, ParamId};
 use burn::nn::{Linear, LinearConfig};
-use burn::tensor::backend::Backend;
-#[cfg(test)]
-use burn::tensor::ops::Device;
-use burn::tensor::{Distribution, IndexingUpdateOp, Int, Tensor};
+use burn::tensor::{Device, Distribution, IndexingUpdateOp, Int, Tensor};
 
 use crate::hyperbolic::PoincareBall;
 
@@ -18,30 +15,30 @@ use crate::hyperbolic::PoincareBall;
 /// Derives [`Module`] so it can be embedded in a trainable model and optimized
 /// by a Burn optimizer (see `examples/cora_node_classification.rs`).
 #[derive(Module, Debug)]
-pub struct GCNConv<B: Backend> {
-    linear: Linear<B>,
+pub struct GCNConv {
+    linear: Linear,
 }
 
-impl<B: Backend> GCNConv<B> {
+impl GCNConv {
     /// Construct from a pre-built `Linear`.
-    pub fn new(linear: Linear<B>) -> Self {
+    pub fn new(linear: Linear) -> Self {
         Self { linear }
     }
 
     /// Construct with a fresh `Linear(d_in, d_out)`.
-    pub fn init(d_in: usize, d_out: usize, device: &B::Device) -> Self {
+    pub fn init(d_in: usize, d_out: usize, device: &Device) -> Self {
         Self {
             linear: LinearConfig::new(d_in, d_out).init(device),
         }
     }
 
     /// Access the underlying linear layer.
-    pub fn linear(&self) -> &Linear<B> {
+    pub fn linear(&self) -> &Linear {
         &self.linear
     }
 
     /// Forward: `adj @ (x @ W) + b`.
-    pub fn forward(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward(&self, x: Tensor<2>, adj: Tensor<2>) -> Tensor<2> {
         let projected = self.linear.forward(x);
         match &self.linear.bias {
             Some(bias) => {
@@ -58,7 +55,7 @@ impl<B: Backend> GCNConv<B> {
     /// Use this only when loading a model whose outputs depend on adjacency-
     /// weighted bias. The stored parameters are identical between the two
     /// forward paths.
-    pub fn forward_legacy(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward_legacy(&self, x: Tensor<2>, adj: Tensor<2>) -> Tensor<2> {
         adj.matmul(self.linear.forward(x))
     }
 }
@@ -77,18 +74,16 @@ impl<B: Backend> GCNConv<B> {
 /// # Example
 ///
 /// ```
-/// use burn::tensor::{backend::Backend, ops::Device, TensorData};
-/// use burn_ndarray::NdArray;
+/// use burn::tensor::{Device, TensorData};
 /// use ricci::HGCNConv;
 ///
-/// type B = NdArray<f32>;
-/// let dev = Device::<B>::default();
+/// let dev = Device::flex();
 ///
-/// let layer = HGCNConv::<B>::init(4, 1.0, &dev);
-/// let x = burn::tensor::Tensor::<B, 2>::from_data(
+/// let layer = HGCNConv::init(4, 1.0, &dev);
+/// let x = burn::tensor::Tensor::< 2>::from_data(
 ///     TensorData::new(vec![0.01f32; 3 * 4], [3, 4]), &dev,
 /// );
-/// let adj = burn::tensor::Tensor::<B, 2>::from_data(
+/// let adj = burn::tensor::Tensor::< 2>::from_data(
 ///     TensorData::new(vec![
 ///         1.0, 0.5, 0.0,
 ///         0.5, 1.0, 0.5,
@@ -103,15 +98,15 @@ impl<B: Backend> GCNConv<B> {
 /// model; the ball geometry is skipped from module persistence (it holds
 /// no learnable parameters).
 #[derive(Module, Debug)]
-pub struct HGCNConv<B: Backend> {
-    linear: Linear<B>,
+pub struct HGCNConv {
+    linear: Linear,
     #[module(skip)]
     ball: PoincareBall,
 }
 
-impl<B: Backend> HGCNConv<B> {
+impl HGCNConv {
     /// Construct from a pre-built `Linear` and curvature parameter.
-    pub fn new(linear: Linear<B>, c: f64) -> Self {
+    pub fn new(linear: Linear, c: f64) -> Self {
         Self {
             linear,
             ball: PoincareBall::new(c),
@@ -119,7 +114,7 @@ impl<B: Backend> HGCNConv<B> {
     }
 
     /// Construct with a fresh `Linear(d, d)` and curvature parameter.
-    pub fn init(d: usize, c: f64, device: &B::Device) -> Self {
+    pub fn init(d: usize, c: f64, device: &Device) -> Self {
         Self {
             linear: LinearConfig::new(d, d).init(device),
             ball: PoincareBall::new(c),
@@ -127,7 +122,7 @@ impl<B: Backend> HGCNConv<B> {
     }
 
     /// Access the underlying linear layer.
-    pub fn linear(&self) -> &Linear<B> {
+    pub fn linear(&self) -> &Linear {
         &self.linear
     }
 
@@ -137,7 +132,7 @@ impl<B: Backend> HGCNConv<B> {
     }
 
     /// Forward pass using log/exp at the origin (no activation).
-    pub fn forward(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward(&self, x: Tensor<2>, adj: Tensor<2>) -> Tensor<2> {
         let x_tangent = self.ball.log0(x);
         let x_tangent = self.linear.forward(x_tangent);
         let aggregated = adj.matmul(x_tangent);
@@ -151,13 +146,13 @@ impl<B: Backend> HGCNConv<B> {
     /// `ball_out` allows per-layer curvature change; pass `self.ball()` for same curvature.
     pub fn forward_act<F>(
         &self,
-        x: Tensor<B, 2>,
-        adj: Tensor<B, 2>,
+        x: Tensor<2>,
+        adj: Tensor<2>,
         act: F,
         ball_out: &PoincareBall,
-    ) -> Tensor<B, 2>
+    ) -> Tensor<2>
     where
-        F: Fn(Tensor<B, 2>) -> Tensor<B, 2>,
+        F: Fn(Tensor<2>) -> Tensor<2>,
     {
         let h = self.forward(x, adj);
         self.ball.hyp_act(h, act, ball_out)
@@ -166,12 +161,7 @@ impl<B: Backend> HGCNConv<B> {
     /// Forward pass using log/exp at an explicit basepoint `p`.
     ///
     /// `p` shape: `[1, d]` (global) or `[n, d]` (per-node).
-    pub fn forward_with_basepoint(
-        &self,
-        x: Tensor<B, 2>,
-        adj: Tensor<B, 2>,
-        p: Tensor<B, 2>,
-    ) -> Tensor<B, 2> {
+    pub fn forward_with_basepoint(&self, x: Tensor<2>, adj: Tensor<2>, p: Tensor<2>) -> Tensor<2> {
         let [n, d] = x.dims();
         let [pn, _pd] = p.dims();
         let p = if pn == 1 { p.expand([n, d]) } else { p };
@@ -187,11 +177,11 @@ impl<B: Backend> HGCNConv<B> {
     /// Transports `b0` to `T_p` before adding to the aggregated tangent vectors.
     pub fn forward_with_basepoint_and_bias(
         &self,
-        x: Tensor<B, 2>,
-        adj: Tensor<B, 2>,
-        p: Tensor<B, 2>,
-        b0: Tensor<B, 2>,
-    ) -> Tensor<B, 2> {
+        x: Tensor<2>,
+        adj: Tensor<2>,
+        p: Tensor<2>,
+        b0: Tensor<2>,
+    ) -> Tensor<2> {
         let [n, d] = x.dims();
         let [pn, _] = p.dims();
         let [bn, _] = b0.dims();
@@ -212,7 +202,7 @@ impl<B: Backend> HGCNConv<B> {
     /// reducing distortion for relative distances.
     ///
     /// Cost: O(n^2 d) compute and memory. For small graphs and correctness reference.
-    pub fn forward_local_dense(&self, x: Tensor<B, 2>, adj: Tensor<B, 2>) -> Tensor<B, 2> {
+    pub fn forward_local_dense(&self, x: Tensor<2>, adj: Tensor<2>) -> Tensor<2> {
         let [n, d] = x.dims();
         let x = self.ball.project(x);
 
@@ -268,37 +258,35 @@ impl<B: Backend> HGCNConv<B> {
 /// # Example
 ///
 /// ```
-/// use burn::tensor::{backend::Backend, ops::Device, TensorData};
-/// use burn_ndarray::NdArray;
-/// use ricci::RGCNConv;
+/// use burn::tensor::{Device, TensorData};
+/// /// use ricci::RGCNConv;
 ///
-/// type B = NdArray<f32>;
-/// let dev = Device::<B>::default();
+/// let dev = Device::default();
 ///
-/// let layer = RGCNConv::<B>::init(4, 4, 2, &dev);
-/// let x = burn::tensor::Tensor::<B, 2>::from_data(
+/// let layer = RGCNConv::init(4, 4, 2, &dev);
+/// let x = burn::tensor::Tensor::< 2>::from_data(
 ///     TensorData::new(vec![0.1f32; 3 * 4], [3, 4]), &dev,
 /// );
-/// let a = burn::tensor::Tensor::<B, 2>::from_data(
+/// let a = burn::tensor::Tensor::< 2>::from_data(
 ///     TensorData::new(vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0f32], [3, 3]), &dev,
 /// );
 /// let y = layer.forward(x, &[a.clone(), a.transpose()]);
 /// assert_eq!(y.dims(), [3, 4]);
 /// ```
 #[derive(Module, Debug)]
-pub struct RGCNConv<B: Backend> {
+pub struct RGCNConv {
     /// Per-relation transforms (empty when basis-decomposed).
-    rel: Vec<Linear<B>>,
+    rel: Vec<Linear>,
     /// Shared bases `V_b`, `[num_bases, d_in, d_out]` (basis mode only).
-    basis: Option<Param<Tensor<B, 3>>>,
+    basis: Option<Param<Tensor<3>>>,
     /// Per-relation basis coefficients `a_rb`, `[num_relations, num_bases]`.
-    coef: Option<Param<Tensor<B, 2>>>,
-    self_loop: Linear<B>,
+    coef: Option<Param<Tensor<2>>>,
+    self_loop: Linear,
 }
 
-impl<B: Backend> RGCNConv<B> {
+impl RGCNConv {
     /// One full `Linear(d_in, d_out)` per relation, plus the self-loop.
-    pub fn init(d_in: usize, d_out: usize, num_relations: usize, device: &B::Device) -> Self {
+    pub fn init(d_in: usize, d_out: usize, num_relations: usize, device: &Device) -> Self {
         Self {
             rel: (0..num_relations)
                 .map(|_| LinearConfig::new(d_in, d_out).init(device))
@@ -316,7 +304,7 @@ impl<B: Backend> RGCNConv<B> {
         d_out: usize,
         num_relations: usize,
         num_bases: usize,
-        device: &B::Device,
+        device: &Device,
     ) -> Self {
         let std = (1.0 / d_in as f64).sqrt();
         let mk3 = Tensor::random(
@@ -353,7 +341,7 @@ impl<B: Backend> RGCNConv<B> {
     ///
     /// # Panics
     /// Panics if `adjs.len()` differs from [`num_relations`](Self::num_relations).
-    pub fn forward(&self, x: Tensor<B, 2>, adjs: &[Tensor<B, 2>]) -> Tensor<B, 2> {
+    pub fn forward(&self, x: Tensor<2>, adjs: &[Tensor<2>]) -> Tensor<2> {
         assert_eq!(
             adjs.len(),
             self.num_relations(),
@@ -384,7 +372,7 @@ impl<B: Backend> RGCNConv<B> {
     ///
     /// Basis mode has never had relation biases, so its legacy and default
     /// outputs are identical. The stored parameters are unchanged.
-    pub fn forward_legacy(&self, x: Tensor<B, 2>, adjs: &[Tensor<B, 2>]) -> Tensor<B, 2> {
+    pub fn forward_legacy(&self, x: Tensor<2>, adjs: &[Tensor<2>]) -> Tensor<2> {
         assert_eq!(
             adjs.len(),
             self.num_relations(),
@@ -432,13 +420,13 @@ impl<B: Backend> RGCNConv<B> {
 /// PAIR representation relative to that source, not an absolute node
 /// embedding.
 #[derive(Module, Debug)]
-pub struct NBFConv<B: Backend> {
-    update: Linear<B>,
+pub struct NBFConv {
+    update: Linear,
 }
 
-impl<B: Backend> NBFConv<B> {
+impl NBFConv {
     /// Construct with a fresh `Linear(d, d)` update transform.
-    pub fn init(d: usize, device: &B::Device) -> Self {
+    pub fn init(d: usize, device: &Device) -> Self {
         Self {
             update: LinearConfig::new(d, d).init(device),
         }
@@ -451,9 +439,9 @@ impl<B: Backend> NBFConv<B> {
     /// coverage should climb toward the source's true reachable set as
     /// layers stack; flat-lining early means the graph (or its
     /// normalization) is starving the propagation.
-    pub fn coverage(h: &Tensor<B, 2>) -> f32 {
+    pub fn coverage(h: &Tensor<2>) -> f32 {
         let [n, d] = h.dims();
-        let v: Vec<f32> = h.clone().into_data().to_vec().unwrap();
+        let v: Vec<f32> = h.clone().into_data().try_to_vec().unwrap();
         let reached = (0..n)
             .filter(|i| (0..d).any(|k| v[i * d + k] != 0.0))
             .count();
@@ -473,13 +461,13 @@ impl<B: Backend> NBFConv<B> {
     /// representations.
     pub fn forward_edges(
         &self,
-        h: Tensor<B, 3>,
-        h0: Tensor<B, 3>,
-        heads: Tensor<B, 1, Int>,
-        tails: Tensor<B, 1, Int>,
-        etypes: Tensor<B, 1, Int>,
-        rel: Tensor<B, 3>,
-    ) -> Tensor<B, 3> {
+        h: Tensor<3>,
+        h0: Tensor<3>,
+        heads: Tensor<1, Int>,
+        tails: Tensor<1, Int>,
+        etypes: Tensor<1, Int>,
+        rel: Tensor<3>,
+    ) -> Tensor<3> {
         let [q, n, d] = h.dims();
         let src = h.select(1, heads); // [Q, E, d]
         let w = rel.select(1, etypes); // [1 or Q, E, d]
@@ -504,11 +492,11 @@ impl<B: Backend> NBFConv<B> {
     /// Panics if `adjs.len()` differs from `rel`'s first dimension.
     pub fn forward(
         &self,
-        h: Tensor<B, 2>,
-        h0: Tensor<B, 2>,
-        adjs: &[Tensor<B, 2>],
-        rel: Tensor<B, 2>,
-    ) -> Tensor<B, 2> {
+        h: Tensor<2>,
+        h0: Tensor<2>,
+        adjs: &[Tensor<2>],
+        rel: Tensor<2>,
+    ) -> Tensor<2> {
         let [num_types, d] = rel.dims();
         assert_eq!(adjs.len(), num_types, "one adjacency per edge type");
         let mut agg = h0;
@@ -525,15 +513,12 @@ impl<B: Backend> NBFConv<B> {
 mod tests {
     use super::*;
     use burn::tensor::TensorData;
-    use burn_ndarray::NdArray;
 
-    type B = NdArray<f32>;
-
-    fn dev() -> Device<B> {
-        Device::<B>::default()
+    fn dev() -> Device {
+        Device::flex()
     }
 
-    fn fixed_linear(weight: f32, bias: f32) -> Linear<B> {
+    fn fixed_linear(weight: f32, bias: f32) -> Linear {
         Linear {
             weight: Param::initialized(
                 ParamId::new(),
@@ -553,7 +538,7 @@ mod tests {
     #[test]
     fn rgcn_distinguishes_relations() {
         let (n, d) = (4, 3);
-        let layer = RGCNConv::<B>::init(d, d, 2, &dev());
+        let layer = RGCNConv::init(d, d, 2, &dev());
         let x = Tensor::from_data(
             TensorData::new((0..n * d).map(|i| i as f32 / 5.0).collect(), [n, d]),
             &dev(),
@@ -568,9 +553,9 @@ mod tests {
         let fwd: Vec<f32> = layer
             .forward(x.clone(), &[a.clone(), b.clone()])
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
-        let swp: Vec<f32> = layer.forward(x, &[b, a]).into_data().to_vec().unwrap();
+        let swp: Vec<f32> = layer.forward(x, &[b, a]).into_data().try_to_vec().unwrap();
         let diff: f32 = fwd.iter().zip(&swp).map(|(p, q)| (p - q).abs()).sum();
         assert!(diff > 1e-4, "relation swap must change the output: {diff}");
     }
@@ -579,10 +564,14 @@ mod tests {
     #[test]
     fn rgcn_zero_relations_is_self_loop() {
         let (n, d) = (3, 2);
-        let layer = RGCNConv::<B>::init(d, d, 0, &dev());
+        let layer = RGCNConv::init(d, d, 0, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.3f32; n * d], [n, d]), &dev());
-        let y: Vec<f32> = layer.forward(x.clone(), &[]).into_data().to_vec().unwrap();
-        let s: Vec<f32> = layer.self_loop.forward(x).into_data().to_vec().unwrap();
+        let y: Vec<f32> = layer
+            .forward(x.clone(), &[])
+            .into_data()
+            .try_to_vec()
+            .unwrap();
+        let s: Vec<f32> = layer.self_loop.forward(x).into_data().try_to_vec().unwrap();
         assert_eq!(y, s);
     }
 
@@ -592,15 +581,16 @@ mod tests {
     #[test]
     fn rgcn_basis_decomposition() {
         let (n, d, r, nb) = (4, 3, 6, 2);
-        let layer = RGCNConv::<B>::with_bases(d, d, r, nb, &dev());
+        let device = Device::flex().autodiff();
+        let layer = RGCNConv::with_bases(d, d, r, nb, &device);
         assert_eq!(layer.num_relations(), r);
-        let x = Tensor::from_data(TensorData::new(vec![0.2f32; n * d], [n, d]), &dev());
+        let x = Tensor::from_data(TensorData::new(vec![0.2f32; n * d], [n, d]), &device);
         let eye = {
             let mut v = vec![0.0f32; n * n];
             for i in 0..n {
                 v[i * n + i] = 1.0;
             }
-            Tensor::from_data(TensorData::new(v, [n, n]), &dev())
+            Tensor::from_data(TensorData::new(v, [n, n]), &device)
         };
         let adjs: Vec<_> = (0..r).map(|_| eye.clone()).collect();
         let y = layer.forward(x, &adjs);
@@ -628,12 +618,12 @@ mod tests {
         let corrected = layer
             .forward(x.clone(), &[a0.clone(), a1.clone()])
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap();
         let legacy = layer
             .forward_legacy(x, &[a0, a1])
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap();
 
         // corrected = A0 X W0 + A1 X W1 + (X Wself + bself)
@@ -670,12 +660,12 @@ mod tests {
         let corrected = layer
             .forward(x.clone(), &[a0.clone(), a1.clone()])
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap();
         let legacy = layer
             .forward_legacy(x, &[a0, a1])
             .into_data()
-            .to_vec::<f32>()
+            .try_to_vec::<f32>()
             .unwrap();
 
         assert_eq!(corrected, vec![-2.0, -6.0]);
@@ -688,7 +678,7 @@ mod tests {
     #[test]
     fn nbf_output_is_conditioned_on_the_source() {
         let (n, d) = (4, 3);
-        let layer = NBFConv::<B>::init(d, &dev());
+        let layer = NBFConv::init(d, &dev());
         let mut ring = vec![0.0f32; n * n];
         for i in 0..n {
             ring[i * n + (i + 1) % n] = 1.0;
@@ -700,7 +690,7 @@ mod tests {
             for j in 0..d {
                 v[src * d + j] = 1.0;
             }
-            Tensor::<B, 2>::from_data(TensorData::new(v, [n, d]), &dev())
+            Tensor::<2>::from_data(TensorData::new(v, [n, d]), &dev())
         };
         let h = Tensor::zeros([n, d], &dev());
         let a: Vec<f32> = layer
@@ -711,12 +701,12 @@ mod tests {
                 rel.clone(),
             )
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
         let b: Vec<f32> = layer
             .forward(h, indicator(2), &[adj], rel)
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
         let diff: f32 = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).sum();
         assert!(diff > 1e-4, "indicator position must matter: {diff}");
@@ -728,7 +718,7 @@ mod tests {
     #[test]
     fn nbf_is_permutation_equivariant() {
         let (n, d) = (3, 2);
-        let layer = NBFConv::<B>::init(d, &dev());
+        let layer = NBFConv::init(d, &dev());
         let adj_v = vec![0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0f32];
         let adj = Tensor::from_data(TensorData::new(adj_v.clone(), [n, n]), &dev());
         let h_v: Vec<f32> = (0..n * d).map(|i| i as f32 / 7.0).collect();
@@ -738,7 +728,7 @@ mod tests {
         let out: Vec<f32> = layer
             .forward(h, h0.clone(), &[adj], rel.clone())
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
 
         // Permutation sigma: 0->1, 1->2, 2->0 (P[sigma(i)][i] = 1).
@@ -765,7 +755,7 @@ mod tests {
                 rel,
             )
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
         for i in 0..n {
             for k in 0..d {
@@ -797,17 +787,17 @@ mod tests {
         for (slot, v) in ind.iter_mut().take(d).zip(std::iter::repeat(1.0)) {
             *slot = v; // indicator at node 0 (row 0)
         }
-        let h0 = Tensor::<B, 2>::from_data(TensorData::new(ind, [n, d]), &dev());
+        let h0 = Tensor::<2>::from_data(TensorData::new(ind, [n, d]), &dev());
         // Bias-free propagation: agg = h0 + A(h ∘ rel), no update transform,
         // mirroring the layer's aggregation to keep zeros exact.
-        let mut h = Tensor::<B, 2>::zeros([n, d], &dev());
+        let mut h = Tensor::<2>::zeros([n, d], &dev());
         let mut prev = 0.0;
         for _ in 0..4 {
             h = h0.clone()
                 + adj
                     .clone()
                     .matmul(h.clone() * rel.clone().slice([0..1, 0..d]));
-            let c = NBFConv::<B>::coverage(&h);
+            let c = NBFConv::coverage(&h);
             assert!(c > prev, "coverage must climb: {prev} -> {c}");
             prev = c;
         }
@@ -820,7 +810,7 @@ mod tests {
     #[test]
     fn nbf_edges_matches_dense() {
         let (n, d) = (4, 3);
-        let layer = NBFConv::<B>::init(d, &dev());
+        let layer = NBFConv::init(d, &dev());
         // Two edge types: 0->1, 1->2 under type 0; 2->3, 3->0 under type 1.
         let e = [(0usize, 1usize, 0usize), (1, 2, 0), (2, 3, 1), (3, 0, 1)];
         let mut a0 = vec![0.0f32; n * n];
@@ -847,7 +837,7 @@ mod tests {
         let dense: Vec<f32> = layer
             .forward(h2, h02, &adjs, rel2.clone())
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
 
         let heads = Tensor::from_data(TensorData::new(vec![0i64, 1, 2, 3], [4]), &dev());
@@ -858,7 +848,7 @@ mod tests {
         let edges: Vec<f32> = layer
             .forward_edges(h3, h03, heads, tails, etypes, rel2.reshape([1, 2, d]))
             .into_data()
-            .to_vec()
+            .try_to_vec()
             .unwrap();
         for (a, b) in dense.iter().zip(&edges) {
             assert!((a - b).abs() < 1e-5, "dense {a} vs edges {b}");
@@ -877,12 +867,12 @@ mod tests {
         let rel_nodes = 2 * n_rel;
 
         // Stage 1: query-conditioned relation representations.
-        let rgraph = relation_graph::<B>(&triples, n_rel, &dev());
+        let rgraph = relation_graph(&triples, n_rel, &dev());
         let fund = Tensor::from_data(
             TensorData::new((0..4 * d).map(|i| 0.1 + i as f32 / 20.0).collect(), [4, d]),
             &dev(),
         );
-        let rel_layer = NBFConv::<B>::init(d, &dev());
+        let rel_layer = NBFConv::init(d, &dev());
         let query_rel = 0usize;
         let mut ind = vec![0.0f32; rel_nodes * d];
         for k in 0..d {
@@ -913,7 +903,7 @@ mod tests {
                 &dev(),
             ));
         }
-        let ent_layer = NBFConv::<B>::init(d, &dev());
+        let ent_layer = NBFConv::init(d, &dev());
         let head = 0usize;
         let mut ind_e = vec![0.0f32; n_ent * d];
         for k in 0..d {
@@ -940,8 +930,8 @@ mod tests {
         for _ in 0..3 {
             he2 = ent_layer.forward(he2, h0e.clone(), &adjs, hr2.clone());
         }
-        let a: Vec<f32> = he.into_data().to_vec().unwrap();
-        let b: Vec<f32> = he2.into_data().to_vec().unwrap();
+        let a: Vec<f32> = he.into_data().try_to_vec().unwrap();
+        let b: Vec<f32> = he2.into_data().try_to_vec().unwrap();
         let diff: f32 = a.iter().zip(&b).map(|(p, q)| (p - q).abs()).sum();
         assert!(diff > 1e-4, "query relation must condition entity states");
     }
@@ -950,7 +940,7 @@ mod tests {
     fn gcn_forward_shapes() {
         let n = 5;
         let d = 3;
-        let layer = GCNConv::<B>::init(d, d, &dev());
+        let layer = GCNConv::init(d, d, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.1f32; n * d], [n, d]), &dev());
         let adj = Tensor::from_data(TensorData::new(vec![1.0f32; n * n], [n, n]), &dev());
         let y = layer.forward(x, adj);
@@ -961,7 +951,7 @@ mod tests {
     fn hgcn_forward_shapes() {
         let n = 5;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.01f32; n * d], [n, d]), &dev());
         // Identity adjacency
         let mut adj_v = vec![0.0f32; n * n];
@@ -977,7 +967,7 @@ mod tests {
     fn hgcn_with_basepoint_shapes() {
         let n = 6;
         let d = 4;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.01f32; n * d], [n, d]), &dev());
         let p = Tensor::from_data(TensorData::new(vec![0.0f32; d], [1, d]), &dev());
         let mut adj_v = vec![0.0f32; n * n];
@@ -993,8 +983,8 @@ mod tests {
     fn hgcn_local_dense_identity_adj_shapes() {
         let n = 4;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
-        let x = Tensor::<B, 2>::from_data(TensorData::new(vec![0.01f32; n * d], [n, d]), &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
+        let x = Tensor::<2>::from_data(TensorData::new(vec![0.01f32; n * d], [n, d]), &dev());
         let mut adj_v = vec![0.0f32; n * n];
         for i in 0..n {
             adj_v[i * n + i] = 1.0;
@@ -1008,7 +998,7 @@ mod tests {
     fn hgcn_forward_act_produces_finite() {
         let n = 4;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.05f32; n * d], [n, d]), &dev());
         let mut adj_v = vec![0.0f32; n * n];
         for i in 0..n {
@@ -1020,7 +1010,7 @@ mod tests {
         let ball = *layer.ball();
         let y = layer.forward_act(x, adj, |t| t.clamp_min(0.0), &ball);
         assert_eq!(y.dims(), [n, d]);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(y_v.iter().all(|v| v.is_finite()), "forward_act non-finite");
     }
 
@@ -1028,7 +1018,7 @@ mod tests {
     fn hgcn_forward_act_with_curvature_change() {
         let n = 3;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(
             TensorData::new(
                 vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
@@ -1046,7 +1036,7 @@ mod tests {
         let ball_out = crate::PoincareBall::new(2.0);
         let y = layer.forward_act(x, adj, |t| t.clamp_min(0.0), &ball_out);
         assert_eq!(y.dims(), [n, d]);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(
             y_v.iter().all(|v| v.is_finite()),
             "curvature-change non-finite"
@@ -1057,7 +1047,7 @@ mod tests {
     fn hgcn_forward_with_bias_shapes_and_finite() {
         let n = 4;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.05f32; n * d], [n, d]), &dev());
         // Shared bias (broadcasted from [1, d])
         let b0 = Tensor::from_data(TensorData::new(vec![0.01f32, -0.01, 0.005], [1, d]), &dev());
@@ -1069,7 +1059,7 @@ mod tests {
         let adj = Tensor::from_data(TensorData::new(adj_v, [n, n]), &dev());
         let y = layer.forward_with_basepoint_and_bias(x, adj, p, b0);
         assert_eq!(y.dims(), [n, d]);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(
             y_v.iter().all(|v| v.is_finite()),
             "forward_with_bias non-finite"
@@ -1080,7 +1070,7 @@ mod tests {
     fn hgcn_forward_with_bias_differs_from_without() {
         let n = 3;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(
             TensorData::new(
                 vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
@@ -1099,8 +1089,8 @@ mod tests {
         let y_no_bias = layer.forward_with_basepoint(x.clone(), adj.clone(), p.clone());
         let y_with_bias = layer.forward_with_basepoint_and_bias(x, adj, p, b0);
 
-        let a = y_no_bias.to_data().to_vec::<f32>().unwrap();
-        let b = y_with_bias.to_data().to_vec::<f32>().unwrap();
+        let a = y_no_bias.to_data().try_to_vec::<f32>().unwrap();
+        let b = y_with_bias.to_data().try_to_vec::<f32>().unwrap();
         // Bias should cause a meaningful difference.
         let diff: f32 = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).sum();
         assert!(diff > 1e-3, "bias should change output, diff={diff}");
@@ -1111,7 +1101,7 @@ mod tests {
         let n = 4;
         let d_in = 5;
         let d_out = 3;
-        let layer = GCNConv::<B>::init(d_in, d_out, &dev());
+        let layer = GCNConv::init(d_in, d_out, &dev());
         let x = Tensor::from_data(TensorData::new(vec![0.1f32; n * d_in], [n, d_in]), &dev());
         let adj = Tensor::from_data(TensorData::new(vec![1.0f32; n * n], [n, n]), &dev());
         let y = layer.forward(x, adj);
@@ -1123,7 +1113,7 @@ mod tests {
         // Non-identity adjacency: a simple 4-node chain graph.
         let n = 4;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(
             TensorData::new(
                 vec![
@@ -1149,7 +1139,7 @@ mod tests {
 
         let y = layer.forward(x, adj);
         assert_eq!(y.dims(), [n, d]);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(
             y_v.iter().all(|v| v.is_finite()),
             "chain graph forward non-finite"
@@ -1171,8 +1161,8 @@ mod tests {
         // Chain two HGCN layers: layer1 -> act -> layer2, simulating a real model.
         let n = 4;
         let d = 3;
-        let layer1 = HGCNConv::<B>::init(d, 1.0, &dev());
-        let layer2 = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer1 = HGCNConv::init(d, 1.0, &dev());
+        let layer2 = HGCNConv::init(d, 1.0, &dev());
 
         let x = Tensor::from_data(TensorData::new(vec![0.05f32; n * d], [n, d]), &dev());
         let mut adj_v = vec![0.0f32; n * n];
@@ -1192,7 +1182,7 @@ mod tests {
         let y = layer2.forward(h, adj);
 
         assert_eq!(y.dims(), [n, d]);
-        let y_v = y.to_data().to_vec::<f32>().unwrap();
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
         assert!(
             y_v.iter().all(|v| v.is_finite()),
             "two-layer pipeline non-finite"
@@ -1205,8 +1195,8 @@ mod tests {
         // because each node only aggregates from itself.
         let n = 3;
         let d = 3;
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
-        let x = Tensor::<B, 2>::from_data(
+        let layer = HGCNConv::init(d, 1.0, &dev());
+        let x = Tensor::<2>::from_data(
             TensorData::new(
                 vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
                 [n, d],
@@ -1223,8 +1213,8 @@ mod tests {
         let y_origin = layer.forward(x.clone(), adj.clone());
         let y_local = layer.forward_local_dense(x, adj);
 
-        let y_o = y_origin.to_data().to_vec::<f32>().unwrap();
-        let y_l = y_local.to_data().to_vec::<f32>().unwrap();
+        let y_o = y_origin.to_data().try_to_vec::<f32>().unwrap();
+        let y_l = y_local.to_data().try_to_vec::<f32>().unwrap();
 
         fn l1(a: &[f32], b: &[f32]) -> f32 {
             a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum()
@@ -1249,9 +1239,9 @@ mod tests {
     }
 
     /// Helper: check all rows of a [n, d] tensor are inside the ball.
-    fn assert_inside_ball(t: &Tensor<B, 2>, ball: &crate::PoincareBall, label: &str) {
+    fn assert_inside_ball(t: &Tensor<2>, ball: &crate::PoincareBall, label: &str) {
         let [n, d] = t.dims();
-        let v = t.to_data().to_vec::<f32>().unwrap();
+        let v = t.to_data().try_to_vec::<f32>().unwrap();
         let max = ball.max_norm();
         for i in 0..n {
             let row = &v[i * d..(i + 1) * d];
@@ -1272,7 +1262,7 @@ mod tests {
         let n = 4;
         let d = 3;
         let ball = crate::PoincareBall::new(1.0);
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(
             TensorData::new(
                 vec![
@@ -1316,7 +1306,7 @@ mod tests {
         let n = 3;
         let d = 3;
         let ball = crate::PoincareBall::new(1.0);
-        let layer = HGCNConv::<B>::init(d, 1.0, &dev());
+        let layer = HGCNConv::init(d, 1.0, &dev());
         let x = Tensor::from_data(
             TensorData::new(
                 vec![0.05f32, -0.03, 0.02, 0.01, 0.04, -0.01, -0.02, 0.01, 0.03],
