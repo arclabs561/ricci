@@ -259,7 +259,7 @@ impl HGCNConv {
 ///
 /// ```
 /// use burn::tensor::{Device, TensorData};
-/// /// use ricci::RGCNConv;
+/// use ricci::RGCNConv;
 ///
 /// let dev = Device::default();
 ///
