@@ -155,7 +155,7 @@ fn accuracy(logits: &[f32], labels: &[i32], idx: &[usize], n_classes: usize) -> 
         let pred = row
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap()
             .0 as i32;
         if pred == labels[i] {
