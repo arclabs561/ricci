@@ -10,6 +10,7 @@ homepage = "https://github.com/arclabs561/ricci"
 documentation = "https://docs.rs/ricci"
 keywords = ["gnn", "graph", "neural-network"]
 categories = ["science", "algorithms"]
+exclude = ["/.github", "/.gitignore"]
 
 [workspace]
 
