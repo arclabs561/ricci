@@ -200,10 +200,12 @@ impl PoincareBall {
         v0 * scale
     }
 
-    /// Project a tangent vector at the origin to have bounded norm.
+    /// Clamp a tangent vector at the origin to norm at most [`Self::max_norm`].
     ///
-    /// Ensures the tangent vector maps to a point inside the ball under exp0.
-    /// Used between curvature changes (HGCN pattern: log0 with c_in, proj_tan0 + exp0 with c_out).
+    /// This is a norm clamp, not HGCN's `proj_tan0` (the identity on the
+    /// Poincare ball). `exp0` already maps every tangent vector inside the
+    /// ball, so the clamp is only needed to bound tangent norms themselves;
+    /// it caps `exp0(v)` at `tanh(sqrt(c) * max_norm) / sqrt(c)`.
     pub fn proj_tan0(&self, v: Tensor<2>) -> Tensor<2> {
         // For the Poincare ball, tangent space at origin is Euclidean (no rescaling needed
         // beyond ensuring the exp map stays in the ball). The conformal factor at origin is
@@ -225,8 +227,10 @@ impl PoincareBall {
     where
         F: Fn(Tensor<2>) -> Tensor<2>,
     {
+        // HGCN's tangent projection at the origin is the identity on the
+        // Poincare ball; exp0 maps every tangent vector inside the ball and
+        // projects for numerical safety, so no norm clamp is applied here.
         let xt = act(self.log0(x));
-        let xt = ball_out.proj_tan0(xt);
         ball_out.project(ball_out.exp0(xt))
     }
 
@@ -549,6 +553,20 @@ mod tests {
             l1(&a, &b) < 1e-5,
             "proj_tan0 should not change small vectors"
         );
+    }
+
+    #[test]
+    fn hyp_act_identity_keeps_points_far_from_origin() {
+        // HGCN (Chami et al. 2019) maps exp0_out(act(log0_in(x))); on the
+        // Poincare ball its tangent projection at the origin is the identity.
+        // With the identity activation and c_in = c_out the map must return x,
+        // also for points whose tangent norm exceeds the ball radius.
+        let ball = PoincareBall::new(1.0);
+        let x = to_burn(&[0.9, 0.0, 0.0, -0.6, 0.6, 0.3], [2, 3]);
+        let x_v = x.clone().to_data().try_to_vec::<f32>().unwrap();
+        let y = ball.hyp_act(x, |t| t, &ball);
+        let y_v = y.to_data().try_to_vec::<f32>().unwrap();
+        assert!(l1(&x_v, &y_v) < 1e-4, "hyp_act moved {x_v:?} to {y_v:?}");
     }
 
     #[test]
