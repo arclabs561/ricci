@@ -13,6 +13,7 @@
 //! - [`features`]: homomorphism-count node features (walks + closed walks),
 //!   the interpretable lift past 1-WL expressiveness
 
+#![doc = include_str!("../README.md")]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 

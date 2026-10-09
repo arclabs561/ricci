@@ -7,6 +7,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -25,6 +27,8 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: test
         run: cargo test --all-targets
+      - name: doctests
+        run: cargo test --doc
   metal-compile:
     runs-on: macos-latest
     steps:
