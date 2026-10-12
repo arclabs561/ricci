@@ -76,11 +76,9 @@ impl PoincareBall {
     }
 
     fn atanh(&self, x: Tensor<2>) -> Tensor<2> {
-        // atanh(x) = 0.5 * ln((1+x)/(1-x))
-        let ones = Tensor::<2>::ones(x.dims(), &x.device());
-        let num = ones.clone() + x.clone();
-        let den = ones - x;
-        (num / (den + self.eps)).log() * 0.5
+        // Callers clamp x below 1. log1p preserves zero and small arguments
+        // without biasing atanh(x) by adding epsilon to the denominator.
+        (x.clone().log1p() - (x * -1.0).log1p()) * 0.5
     }
 
     fn norm_keepdim(&self, x: Tensor<2>) -> Tensor<2> {
@@ -343,6 +341,32 @@ mod tests {
         let x_v = x.to_data().try_to_vec::<f32>().unwrap();
         let x2_v = x2.to_data().try_to_vec::<f32>().unwrap();
         assert!(l1(&x_v, &x2_v) < 1e-3, "exp0(log0(x)) roundtrip failed");
+    }
+
+    #[test]
+    fn distance_at_and_near_origin_is_nonnegative() {
+        for c in [0.1, 1.0, 5.0] {
+            let ball = PoincareBall::new(c);
+            for radius in [0.0f32, 1e-8, 1e-6, 0.1] {
+                let origin = to_burn(&[0.0, 0.0], [1, 2]);
+                let point = to_burn(&[radius, 0.0], [1, 2]);
+                let distance = ball
+                    .distance(origin, point)
+                    .to_data()
+                    .try_to_vec::<f32>()
+                    .unwrap()[0];
+                let expected = 2.0 * ((c.sqrt() * f64::from(radius)).atanh()) / c.sqrt();
+                assert!(distance >= 0.0, "c={c}, radius={radius}: {distance}");
+                if radius == 0.0 {
+                    assert_eq!(distance, 0.0);
+                } else {
+                    assert!(
+                        (f64::from(distance) - expected).abs() < expected * 1e-5,
+                        "c={c}, radius={radius}: {distance} != {expected}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
