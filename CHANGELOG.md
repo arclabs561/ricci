@@ -1,5 +1,12 @@
 # Changelog
 
+## Source history (release attribution not established)
+
+These source changes are listed without assigning them to a published release.
+
+- Correct the shared hyperbolic `atanh` arithmetic to preserve zero and small Poincare distances without changing caller boundary clamps.
+  ([source change](https://github.com/arclabs561/ricci/commit/98458b56589d185acf587849dcfae9716db4d362))
+
 ## [Unreleased]
 
 ### Changed
