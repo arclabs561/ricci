@@ -83,7 +83,8 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::features`: homomorphism-count node features (walk and closed-walk
   profiles); these separate some graphs that 1-WL message passing cannot.
 
-Inputs are shaped `[batch, d]` (row-major feature vectors).
+`PoincareBall` inputs are shaped `[batch, d]` (row-major feature vectors).
+Graph-layer methods have their own shape requirements; see their API docs.
 
 ## Examples
 

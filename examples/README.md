@@ -32,7 +32,7 @@ cargo run --release --example burn_poincare_smoke
 ```
 
 ```text
-x2 (first row): [0.09997763, -0.049988814, 0.019995525]
+x2 (first row): [0.09998251, -0.049991254, 0.0199965]
 ```
 
 The recovered point is close to the original first row
