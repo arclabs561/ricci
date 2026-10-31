@@ -9,6 +9,12 @@ These source changes are listed without assigning them to a published release.
 
 ## [Unreleased]
 
+### Fixed
+
+- `PoincareBall::exp0` divided by an extra `sqrt(c)`, so `exp0(log0(x))`
+  returned `x / sqrt(c)` and every HGCN layer with `c != 1` shrank its
+  embeddings. It now matches `exp_map` at the origin for every curvature.
+
 ### Changed
 
 - **Breaking:** migrated to the pinned Burn 0.22 development revision. Public

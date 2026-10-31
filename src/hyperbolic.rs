@@ -154,11 +154,12 @@ impl PoincareBall {
         x * scale
     }
 
-    /// Exp map at origin: `exp_0(v)`.
+    /// Exp map at origin: `exp_0(v) = tanh(sqrt(c)|v|) v / (sqrt(c)|v|)`.
     pub fn exp0(&self, v: Tensor<2>) -> Tensor<2> {
         let norm = self.norm_keepdim(v.clone());
         let z = norm.clone() * self.sqrt_c();
-        let scale = z.clone().tanh() / (z + self.eps) / self.sqrt_c();
+        // `z` already carries sqrt(c), so no further division by it.
+        let scale = z.clone().tanh() / (z + self.eps);
         self.project(v * scale)
     }
 
