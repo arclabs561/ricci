@@ -32,8 +32,13 @@ let x = burn::tensor::Tensor::<2>::from_data(
 let y = burn::tensor::Tensor::<2>::from_data(
     TensorData::new(vec![0.00f32, 0.10, 0.00], [1, 3]), &dev,
 );
-let d = ball.distance(x, y).to_data().to_vec::<f32>().unwrap()[0];
-assert!(d >= 0.0);
+let d = ball.distance(x, y).to_data().try_to_vec::<f32>().unwrap()[0];
+println!("d = {d:.4}");
+assert!((d - 0.2847).abs() < 1e-4);
+```
+
+```text
+d = 0.2847
 ```
 
 ## Feature flags
@@ -74,7 +79,6 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
   as forward inputs; indicator-initialized pair representations).
 - `ricci::relgraph`: the graph of relations (four interaction-type
   adjacencies over relation nodes, inverses included).
-  All conv layers derive Burn's `Module`, so they embed in trainable models.
 - `ricci::scatter`: exact segment max/min helpers for edge-list aggregation.
 - `ricci::curvature`: approximate Ollivier-Ricci edge curvature over an
   adjacency matrix (lazy-walk `alpha`, entropic transport via Sinkhorn).
@@ -83,6 +87,7 @@ where $\lambda_x^c = \frac{2}{1 - c\lVert x\rVert^2}$ is the conformal factor.
 - `ricci::features`: homomorphism-count node features (walk and closed-walk
   profiles); these separate some graphs that 1-WL message passing cannot.
 
+All conv layers derive Burn's `Module`, so they embed in trainable models.
 `PoincareBall` inputs are shaped `[batch, d]` (row-major feature vectors).
 Graph-layer methods have their own shape requirements; see their API docs.
 
