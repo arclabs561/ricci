@@ -37,3 +37,25 @@ fn exp0_matches_exp_map_at_origin_c4() {
         assert!((p - q).abs() < 1e-4, "exp0 = {a:?}, exp_map(0, .) = {b:?}");
     }
 }
+
+/// log_0(x) = atanh(sqrt(c)|x|) x / (sqrt(c)|x|) -> x as |x| -> 0, and the
+/// same holds for exp_0 and for exp_map/log_map at the origin. Adding eps
+/// (1e-5) to the norm in the denominator shrank a 1e-4 vector by about 10%.
+#[test]
+fn origin_maps_are_unbiased_at_small_norm() {
+    let ball = PoincareBall::new(1.0);
+    let x = t(&[1e-4, 0.0], [1, 2]);
+    let o = t(&[0.0, 0.0], [1, 2]);
+    let maps = [
+        ("log0", vec_of(ball.log0(x.clone()))),
+        ("exp0", vec_of(ball.exp0(x.clone()))),
+        ("log_map", vec_of(ball.log_map(o.clone(), x.clone()))),
+        ("exp_map", vec_of(ball.exp_map(o, x))),
+    ];
+    for (name, got) in maps {
+        assert!(
+            (got[0] - 1e-4).abs() < 1e-9 && got[1] == 0.0,
+            "{name}([1e-4, 0]) = {got:?}"
+        );
+    }
+}

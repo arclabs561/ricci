@@ -14,6 +14,10 @@ These source changes are listed without assigning them to a published release.
 - `PoincareBall::exp0` divided by an extra `sqrt(c)`, so `exp0(log0(x))`
   returned `x / sqrt(c)` and every HGCN layer with `c != 1` shrank its
   embeddings. It now matches `exp_map` at the origin for every curvature.
+- `PoincareBall::{log0, exp0, log_map, exp_map}` added `eps` to the norm in
+  the denominator, which shrank small vectors by `eps / |v|` (about 10% at
+  `|v| = 1e-4`). They now floor the norm at `eps` instead, so results are
+  exact for norms at or above `eps`.
 
 ### Changed
 
