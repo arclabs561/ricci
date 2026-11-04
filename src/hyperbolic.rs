@@ -150,7 +150,9 @@ impl PoincareBall {
         let norm = self.norm_keepdim(x.clone());
         let z = (norm.clone() * self.sqrt_c()).clamp_max(1.0 - self.eps);
         let atanh_z = self.atanh(z);
-        let scale = atanh_z / (norm + self.eps) / self.sqrt_c();
+        // Floor the norm instead of adding eps: `norm + eps` biases the
+        // result by eps / |x| (10% at |x| = 1e-4).
+        let scale = atanh_z / norm.clamp_min(self.eps) / self.sqrt_c();
         x * scale
     }
 
@@ -159,7 +161,7 @@ impl PoincareBall {
         let norm = self.norm_keepdim(v.clone());
         let z = norm.clone() * self.sqrt_c();
         // `z` already carries sqrt(c), so no further division by it.
-        let scale = z.clone().tanh() / (z + self.eps);
+        let scale = z.clone().tanh() / z.clamp_min(self.eps);
         self.project(v * scale)
     }
 
@@ -174,7 +176,7 @@ impl PoincareBall {
         let lambda = self.lambda_x(p);
         let z = (norm.clone() * self.sqrt_c()).clamp_max(1.0 - self.eps);
         let atanh_z = self.atanh(z);
-        let factor = (atanh_z / (norm + self.eps)) * (2.0 / lambda / self.sqrt_c());
+        let factor = (atanh_z / norm.clamp_min(self.eps)) * (2.0 / lambda / self.sqrt_c());
         delta * factor
     }
 
@@ -184,7 +186,7 @@ impl PoincareBall {
         let vnorm = self.norm_keepdim(v.clone());
         let lambda = self.lambda_x(p.clone());
         let z = vnorm.clone() * lambda * (self.sqrt_c() * 0.5);
-        let scale = z.tanh() / (vnorm + self.eps) / self.sqrt_c();
+        let scale = z.tanh() / vnorm.clamp_min(self.eps) / self.sqrt_c();
         let second = v * scale;
         self.mobius_add(p, second)
     }
