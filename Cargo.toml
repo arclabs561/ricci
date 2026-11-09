@@ -27,7 +27,7 @@ cubecl = { git = "https://github.com/tracel-ai/cubecl", rev = "359770be3c9fe69c0
 graphops = "0.5"
 lapl = "0.1"
 ndarray = "0.16"
-wass = "0.2"
+wass = "0.3"
 
 [dev-dependencies]
 proptest = "1.5"
