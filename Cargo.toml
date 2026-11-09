@@ -24,7 +24,7 @@ burn = { git = "https://github.com/tracel-ai/burn", rev = "1414c8a14e5169ef5e5fc
 cubecl = { git = "https://github.com/tracel-ai/cubecl", rev = "359770be3c9fe69c0b0f4c6f7697062a86bbf4a8", default-features = false, optional = true }
 # The curvature module composes the ecosystem's primitives: random-walk
 # measures (lapl), hop distances (graphops), entropic W1 (wass).
-graphops = "0.5"
+graphops = "0.6"
 lapl = "0.1"
 ndarray = "0.16"
 wass = "0.2"
