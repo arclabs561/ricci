@@ -26,7 +26,7 @@ cubecl = { git = "https://github.com/tracel-ai/cubecl", rev = "359770be3c9fe69c0
 # measures (lapl), hop distances (graphops), entropic W1 (wass).
 graphops = "0.5"
 lapl = "0.1"
-ndarray = "0.16"
+ndarray = "0.17"
 wass = "0.2"
 
 [dev-dependencies]
